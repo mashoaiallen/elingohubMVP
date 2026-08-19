@@ -1,0 +1,514 @@
+#include <Arduino.h>
+#include <LiquidCrystal_I2C.h>
+#include <Wire.h>
+#include <driver/i2s.h>
+#include <esp_heap_caps.h>
+#include <esp_intr_alloc.h>
+#include <freertos/FreeRTOS.h>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+
+#if !defined(DIAG_I2S_SCK)
+#define DIAG_I2S_SCK 4
+#endif
+
+#if !defined(DIAG_I2S_WS)
+#define DIAG_I2S_WS 5
+#endif
+
+#if !defined(DIAG_I2S_SD)
+#define DIAG_I2S_SD 6
+#endif
+
+#if !defined(DIAG_RED_LED)
+#define DIAG_RED_LED 11
+#endif
+
+#if !defined(DIAG_GREEN_LED)
+#define DIAG_GREEN_LED 12
+#endif
+
+#if !defined(DIAG_LCD_SDA)
+#define DIAG_LCD_SDA 8
+#endif
+
+#if !defined(DIAG_LCD_SCL)
+#define DIAG_LCD_SCL 9
+#endif
+
+#if !defined(DIAG_LCD_ADDRESS)
+#define DIAG_LCD_ADDRESS 0x27
+#endif
+
+#if !defined(DIAG_LCD_COLUMNS)
+#define DIAG_LCD_COLUMNS 16
+#endif
+
+#if !defined(DIAG_LCD_ROWS)
+#define DIAG_LCD_ROWS 2
+#endif
+
+#if !defined(DIAG_LED_ACTIVE_LOW)
+#define DIAG_LED_ACTIVE_LOW 0
+#endif
+
+#if !defined(DIAG_SAMPLE_RATE)
+#define DIAG_SAMPLE_RATE 48000
+#endif
+
+#if !defined(DIAG_CHUNK_MS)
+#define DIAG_CHUNK_MS 3000
+#endif
+
+#if !defined(DIAG_I2S_SLOT)
+#define DIAG_I2S_SLOT 0
+#endif
+
+#if !defined(DIAG_PCM_SHIFT)
+#define DIAG_PCM_SHIFT 14
+#endif
+
+namespace {
+
+constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
+constexpr size_t WAV_HEADER_BYTES = 44;
+constexpr size_t READ_SAMPLES = 256;
+constexpr uint16_t DMA_BUFFER_COUNT = 8;
+constexpr uint16_t DMA_BUFFER_LENGTH = 512;
+constexpr size_t BASE64_INPUT_BYTES_PER_LINE = 48;
+constexpr uint8_t CAPTURE_COUNTDOWN_SECONDS = 8;
+
+#if DIAG_I2S_SLOT == 1
+constexpr i2s_channel_fmt_t I2S_CHANNEL_FORMAT = I2S_CHANNEL_FMT_ONLY_RIGHT;
+constexpr const char *I2S_SLOT_NAME = "RIGHT";
+#else
+constexpr i2s_channel_fmt_t I2S_CHANNEL_FORMAT = I2S_CHANNEL_FMT_ONLY_LEFT;
+constexpr const char *I2S_SLOT_NAME = "LEFT";
+#endif
+
+int32_t rawBuffer[READ_SAMPLES];
+uint8_t *wavBuffer = nullptr;
+LiquidCrystal_I2C lcd(DIAG_LCD_ADDRESS, DIAG_LCD_COLUMNS, DIAG_LCD_ROWS);
+bool finished = false;
+bool lcdReady = false;
+
+int16_t minSample = INT16_MAX;
+int16_t maxSample = INT16_MIN;
+int32_t minRaw = INT32_MAX;
+int32_t maxRaw = INT32_MIN;
+int64_t sumSamples = 0;
+uint64_t sumSquares = 0;
+uint32_t sampleCount = 0;
+uint32_t rawZeroCount = 0;
+uint32_t rawMinusOneCount = 0;
+uint32_t pcmZeroCount = 0;
+uint32_t bytesWritten = 0;
+uint32_t captureRms = 0;
+
+uint32_t targetPcmBytes() {
+  return (DIAG_SAMPLE_RATE * 2UL * DIAG_CHUNK_MS) / 1000UL;
+}
+
+uint32_t wavCapacityBytes() {
+  return WAV_HEADER_BYTES + targetPcmBytes();
+}
+
+int ledLevel(bool on) {
+  if (DIAG_LED_ACTIVE_LOW) {
+    return on ? LOW : HIGH;
+  }
+  return on ? HIGH : LOW;
+}
+
+void setStatusLed(bool redOn, bool greenOn) {
+  digitalWrite(DIAG_RED_LED, ledLevel(redOn));
+  digitalWrite(DIAG_GREEN_LED, ledLevel(greenOn));
+}
+
+String fitLcdLine(const String &line) {
+  String fitted = line;
+  if (fitted.length() > DIAG_LCD_COLUMNS) {
+    fitted = fitted.substring(0, DIAG_LCD_COLUMNS);
+  }
+
+  while (fitted.length() < DIAG_LCD_COLUMNS) {
+    fitted += ' ';
+  }
+
+  return fitted;
+}
+
+void showLcdLines(const String &line1, const String &line2) {
+  if (!lcdReady) {
+    return;
+  }
+
+  lcd.setCursor(0, 0);
+  lcd.print(fitLcdLine(line1));
+  lcd.setCursor(0, 1);
+  lcd.print(fitLcdLine(line2));
+}
+
+void beginVisualStatus() {
+  pinMode(DIAG_RED_LED, OUTPUT);
+  pinMode(DIAG_GREEN_LED, OUTPUT);
+  setStatusLed(true, false);
+
+  Wire.begin(DIAG_LCD_SDA, DIAG_LCD_SCL);
+  lcd.init();
+  lcd.backlight();
+  lcd.clear();
+  lcdReady = true;
+  showLcdLines("INMP441 Diag", "Booting...");
+}
+
+void writeLe16(uint8_t *target, uint16_t value) {
+  target[0] = static_cast<uint8_t>(value & 0xFF);
+  target[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+}
+
+void writeLe32(uint8_t *target, uint32_t value) {
+  target[0] = static_cast<uint8_t>(value & 0xFF);
+  target[1] = static_cast<uint8_t>((value >> 8) & 0xFF);
+  target[2] = static_cast<uint8_t>((value >> 16) & 0xFF);
+  target[3] = static_cast<uint8_t>((value >> 24) & 0xFF);
+}
+
+void writeWavHeader(uint32_t pcmBytes) {
+  memcpy(wavBuffer + 0, "RIFF", 4);
+  writeLe32(wavBuffer + 4, 36 + pcmBytes);
+  memcpy(wavBuffer + 8, "WAVE", 4);
+  memcpy(wavBuffer + 12, "fmt ", 4);
+  writeLe32(wavBuffer + 16, 16);
+  writeLe16(wavBuffer + 20, 1);
+  writeLe16(wavBuffer + 22, 1);
+  writeLe32(wavBuffer + 24, DIAG_SAMPLE_RATE);
+  writeLe32(wavBuffer + 28, DIAG_SAMPLE_RATE * 2UL);
+  writeLe16(wavBuffer + 32, 2);
+  writeLe16(wavBuffer + 34, 16);
+  memcpy(wavBuffer + 36, "data", 4);
+  writeLe32(wavBuffer + 40, pcmBytes);
+}
+
+uint8_t *allocateBytes(size_t length) {
+#if defined(BOARD_HAS_PSRAM) || defined(CONFIG_SPIRAM)
+  uint8_t *psramBuffer = static_cast<uint8_t *>(heap_caps_malloc(length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (psramBuffer != nullptr) {
+    return psramBuffer;
+  }
+#endif
+  return static_cast<uint8_t *>(malloc(length));
+}
+
+void printBase64Line(const uint8_t *data, size_t length) {
+  static const char alphabet[] =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  char line[((BASE64_INPUT_BYTES_PER_LINE + 2) / 3) * 4 + 1];
+  size_t out = 0;
+
+  for (size_t i = 0; i < length; i += 3) {
+    uint32_t b0 = data[i];
+    uint32_t b1 = (i + 1 < length) ? data[i + 1] : 0;
+    uint32_t b2 = (i + 2 < length) ? data[i + 2] : 0;
+    uint32_t triple = (b0 << 16) | (b1 << 8) | b2;
+
+    line[out++] = alphabet[(triple >> 18) & 0x3F];
+    line[out++] = alphabet[(triple >> 12) & 0x3F];
+    line[out++] = (i + 1 < length) ? alphabet[(triple >> 6) & 0x3F] : '=';
+    line[out++] = (i + 2 < length) ? alphabet[triple & 0x3F] : '=';
+  }
+
+  line[out] = '\0';
+  Serial.println(line);
+}
+
+void printBase64Wav(const uint8_t *data, size_t length) {
+  Serial.println("[AudioDiag] WAV_BASE64_BEGIN");
+  for (size_t offset = 0; offset < length; offset += BASE64_INPUT_BYTES_PER_LINE) {
+    size_t lineBytes = min(BASE64_INPUT_BYTES_PER_LINE, length - offset);
+    printBase64Line(data + offset, lineBytes);
+  }
+  Serial.println("[AudioDiag] WAV_BASE64_END");
+}
+
+void printRawWindow(size_t rawWordsRead) {
+  size_t samplesToPrint = min(rawWordsRead, static_cast<size_t>(32));
+  Serial.println("[AudioDiag] RAW32_HEX");
+  for (size_t i = 0; i < samplesToPrint; ++i) {
+    char line[11];
+    snprintf(line, sizeof(line), "0x%08lX", static_cast<unsigned long>(rawBuffer[i]));
+    Serial.println(line);
+  }
+
+  Serial.println("[AudioDiag] PCM16_FIRST");
+  for (size_t i = 0; i < samplesToPrint; ++i) {
+    Serial.println(static_cast<int16_t>(rawBuffer[i] >> DIAG_PCM_SHIFT));
+  }
+}
+
+bool configureI2s() {
+  i2s_config_t i2sConfig = {};
+  i2sConfig.mode = static_cast<i2s_mode_t>(I2S_MODE_MASTER | I2S_MODE_RX);
+  i2sConfig.sample_rate = DIAG_SAMPLE_RATE;
+  i2sConfig.bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT;
+  i2sConfig.channel_format = I2S_CHANNEL_FORMAT;
+  i2sConfig.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+  i2sConfig.intr_alloc_flags = ESP_INTR_FLAG_LEVEL1;
+  i2sConfig.dma_buf_count = DMA_BUFFER_COUNT;
+  i2sConfig.dma_buf_len = DMA_BUFFER_LENGTH;
+  i2sConfig.use_apll = false;
+  i2sConfig.tx_desc_auto_clear = false;
+  i2sConfig.fixed_mclk = 0;
+
+  i2s_pin_config_t pinConfig = {};
+  pinConfig.mck_io_num = I2S_PIN_NO_CHANGE;
+  pinConfig.bck_io_num = DIAG_I2S_SCK;
+  pinConfig.ws_io_num = DIAG_I2S_WS;
+  pinConfig.data_out_num = I2S_PIN_NO_CHANGE;
+  pinConfig.data_in_num = DIAG_I2S_SD;
+
+  esp_err_t result = i2s_driver_install(I2S_PORT, &i2sConfig, 0, nullptr);
+  if (result != ESP_OK) {
+    Serial.print("[AudioDiag] i2s_driver_install failed: ");
+    Serial.println(result);
+    return false;
+  }
+
+  result = i2s_set_pin(I2S_PORT, &pinConfig);
+  if (result != ESP_OK) {
+    Serial.print("[AudioDiag] i2s_set_pin failed: ");
+    Serial.println(result);
+    i2s_driver_uninstall(I2S_PORT);
+    return false;
+  }
+
+  i2s_zero_dma_buffer(I2S_PORT);
+  return true;
+}
+
+void writeSample(int16_t sample) {
+  if (bytesWritten + sizeof(int16_t) > targetPcmBytes()) {
+    return;
+  }
+
+  size_t offset = WAV_HEADER_BYTES + bytesWritten;
+  writeLe16(wavBuffer + offset, static_cast<uint16_t>(sample));
+  bytesWritten += sizeof(int16_t);
+}
+
+void updateStats(int32_t raw, int16_t sample) {
+  if (raw == 0) {
+    ++rawZeroCount;
+  }
+  if (raw == -1) {
+    ++rawMinusOneCount;
+  }
+  if (sample == 0) {
+    ++pcmZeroCount;
+  }
+
+  minRaw = min(minRaw, raw);
+  maxRaw = max(maxRaw, raw);
+  minSample = min(minSample, sample);
+  maxSample = max(maxSample, sample);
+  sumSamples += sample;
+  sumSquares += static_cast<uint64_t>(static_cast<int64_t>(sample) * static_cast<int64_t>(sample));
+  ++sampleCount;
+}
+
+void resetCaptureState() {
+  minSample = INT16_MAX;
+  maxSample = INT16_MIN;
+  minRaw = INT32_MAX;
+  maxRaw = INT32_MIN;
+  sumSamples = 0;
+  sumSquares = 0;
+  sampleCount = 0;
+  rawZeroCount = 0;
+  rawMinusOneCount = 0;
+  pcmZeroCount = 0;
+  bytesWritten = 0;
+  captureRms = 0;
+  memset(wavBuffer, 0, wavCapacityBytes());
+}
+
+void captureAudio() {
+  bool rawWindowPrinted = false;
+  uint32_t startedMs = millis();
+  Serial.println("[AudioDiag] Capture started");
+  setStatusLed(true, false);
+  showLcdLines("Recording", "Speak now");
+  i2s_start(I2S_PORT);
+
+  while (bytesWritten < targetPcmBytes()) {
+    size_t bytesRead = 0;
+    esp_err_t result = i2s_read(
+        I2S_PORT,
+        rawBuffer,
+        sizeof(rawBuffer),
+        &bytesRead,
+        pdMS_TO_TICKS(1000));
+
+    if (result != ESP_OK) {
+      Serial.print("[AudioDiag] i2s_read failed: ");
+      Serial.println(result);
+      break;
+    }
+
+    if (bytesRead == 0) {
+      Serial.println("[AudioDiag] i2s_read returned 0 bytes");
+      continue;
+    }
+
+    size_t rawWordsRead = bytesRead / sizeof(int32_t);
+    if (!rawWindowPrinted) {
+      printRawWindow(rawWordsRead);
+      rawWindowPrinted = true;
+    }
+
+    for (size_t i = 0; i < rawWordsRead && bytesWritten < targetPcmBytes(); ++i) {
+      int32_t raw = rawBuffer[i];
+      int16_t sample = static_cast<int16_t>(raw >> DIAG_PCM_SHIFT);
+      updateStats(raw, sample);
+      writeSample(sample);
+    }
+  }
+
+  i2s_stop(I2S_PORT);
+  uint32_t elapsedMs = millis() - startedMs;
+  writeWavHeader(bytesWritten);
+
+  int32_t average = 0;
+  if (sampleCount > 0) {
+    float meanSquare = static_cast<float>(sumSquares) / static_cast<float>(sampleCount);
+    captureRms = static_cast<uint32_t>(sqrtf(meanSquare));
+    average = static_cast<int32_t>(sumSamples / static_cast<int64_t>(sampleCount));
+  }
+
+  Serial.println("[AudioDiag] Capture complete");
+  Serial.print("[AudioDiag] Elapsed ms=");
+  Serial.println(elapsedMs);
+  Serial.print("[AudioDiag] Samples=");
+  Serial.println(sampleCount);
+  Serial.print("[AudioDiag] Raw min=");
+  Serial.println(minRaw);
+  Serial.print("[AudioDiag] Raw max=");
+  Serial.println(maxRaw);
+  Serial.print("[AudioDiag] Raw zero count=");
+  Serial.println(rawZeroCount);
+  Serial.print("[AudioDiag] Raw -1 count=");
+  Serial.println(rawMinusOneCount);
+  Serial.print("[AudioDiag] PCM min=");
+  Serial.println(minSample);
+  Serial.print("[AudioDiag] PCM max=");
+  Serial.println(maxSample);
+  Serial.print("[AudioDiag] PCM average=");
+  Serial.println(average);
+  Serial.print("[AudioDiag] PCM RMS=");
+  Serial.println(captureRms);
+  Serial.print("[AudioDiag] PCM zero count=");
+  Serial.println(pcmZeroCount);
+  Serial.print("[AudioDiag] WAV bytes=");
+  Serial.println(WAV_HEADER_BYTES + bytesWritten);
+  Serial.print("[AudioDiag] Verdict=");
+  Serial.println(captureRms <= 1 ? "flat-or-disconnected" : "non-zero-audio");
+
+  char rmsLine[DIAG_LCD_COLUMNS + 1];
+  snprintf(rmsLine, sizeof(rmsLine), "RMS %lu", static_cast<unsigned long>(captureRms));
+  if (captureRms > 1) {
+    setStatusLed(false, true);
+    showLcdLines("Audio OK", rmsLine);
+  } else {
+    setStatusLed(true, false);
+    showLcdLines("Flat Capture", rmsLine);
+  }
+}
+
+void printHeader() {
+  Serial.println();
+  Serial.println("[AudioDiag] INMP441 I2S microphone diagnostic");
+  Serial.print("[AudioDiag] Pins SCK=");
+  Serial.print(DIAG_I2S_SCK);
+  Serial.print(" WS=");
+  Serial.print(DIAG_I2S_WS);
+  Serial.print(" SD=");
+  Serial.println(DIAG_I2S_SD);
+  Serial.print("[AudioDiag] Slot=");
+  Serial.println(I2S_SLOT_NAME);
+  Serial.print("[AudioDiag] Sample rate=");
+  Serial.println(DIAG_SAMPLE_RATE);
+  Serial.print("[AudioDiag] PCM shift=");
+  Serial.println(DIAG_PCM_SHIFT);
+  Serial.print("[AudioDiag] Chunk ms=");
+  Serial.println(DIAG_CHUNK_MS);
+  Serial.print("[AudioDiag] Free heap=");
+  Serial.println(ESP.getFreeHeap());
+  Serial.print("[AudioDiag] PSRAM found=");
+  Serial.println(psramFound() ? "yes" : "no");
+  Serial.print("[AudioDiag] PSRAM size=");
+  Serial.println(ESP.getPsramSize());
+  showLcdLines("INMP441 Diag", "Serial ready");
+}
+
+void waitBeforeCapture() {
+  Serial.println("[AudioDiag] Put speech near the microphone now.");
+  setStatusLed(true, false);
+  for (int second = CAPTURE_COUNTDOWN_SECONDS; second > 0; --second) {
+    Serial.print("[AudioDiag] Recording starts in ");
+    Serial.println(second);
+    char line[DIAG_LCD_COLUMNS + 1];
+    snprintf(line, sizeof(line), "Starts in %d", second);
+    showLcdLines("Speak near mic", line);
+    delay(1000);
+  }
+}
+
+}  // namespace
+
+void setup() {
+  beginVisualStatus();
+
+  Serial.begin(115200);
+  uint32_t serialStartMs = millis();
+  while (!Serial && millis() - serialStartMs < 5000) {
+    delay(10);
+  }
+
+  printHeader();
+  wavBuffer = allocateBytes(wavCapacityBytes());
+  if (wavBuffer == nullptr) {
+    Serial.println("[AudioDiag] WAV allocation failed");
+    finished = true;
+    return;
+  }
+  memset(wavBuffer, 0, wavCapacityBytes());
+
+  if (!configureI2s()) {
+    finished = true;
+    return;
+  }
+
+  uint32_t cycle = 1;
+  while (true) {
+    Serial.print("[AudioDiag] Cycle=");
+    Serial.println(cycle++);
+    resetCaptureState();
+    waitBeforeCapture();
+    captureAudio();
+    if (captureRms > 1) {
+      printBase64Wav(wavBuffer, WAV_HEADER_BYTES + bytesWritten);
+    } else {
+      Serial.println("[AudioDiag] WAV dump skipped because capture is flat");
+    }
+    Serial.println("[AudioDiag] Diagnostic cycle complete");
+    Serial.flush();
+    delay(10000);
+  }
+}
+
+void loop() {
+  delay(1000);
+}

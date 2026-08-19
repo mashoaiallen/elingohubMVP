@@ -1,0 +1,380 @@
+
+[AudioDiag] INMP441 I2S microphone diagnostic
+[AudioDiag] Pins SCK=4 WS=5 SD=6
+[AudioDiag] Slot=RIGHT
+[AudioDiag] Sample rate=48000
+[AudioDiag] PCM shift=14
+[AudioDiag] Chunk ms=3000
+[AudioDiag] Free heap=343132
+[AudioDiag] PSRAM found=yes
+
+1
+8[AudioDiag] Recording starts in 7
+[AudioDiag] Recording starts in 6
+[AudioDiag] Recording starts in 5
+[AudioDiag] Recording starts in 4
+[AudioDiag] Recording starts in 3
+[AudioDiag] Recording starts in 2
+[AudioDiag] Recording starts in 1
+[AudioDiag] Capture started
+[AudioDiag] RAW32_HEX
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+[AudioDiag] PCM16_FIRST
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+[AudioDiag] Capture complete
+[AudioDiag] Elapsed ms=2934
+[AudioDiag] Samples=144000
+[AudioDiag] Raw min=0
+[AudioDiag] Raw max=0
+[AudioDiag] Raw zero count=144000
+[AudioDiag] Raw -1 count=0
+[AudioDiag] PCM min=0
+[AudioDiag] PCM max=0
+[AudioDiag] PCM average=0
+[AudioDiag] PCM RMS=0
+[AudioDiag] PCM zero count=144000
+[AudioDiag] WAV bytes=288044
+[AudioDiag] Verdict=flat-or-disconnected
+[AudioDiag] WAV dump skipped because capture is flat
+[AudioDiag] Diagnostic cycle complete
+[AudioDiag] Cycle=2
+[AudioDiag] Put speech near the microphone now.
+[AudioDiag] Recording starts in 8
+[AudioDiag] Recording starts in 7
+[AudioDiag] Recording starts in 6
+[AudioDiag] Recording starts in 5
+[AudioDiag] Recording starts in 4
+[AudioDiag] Recording starts in 3
+[AudioDiag] Recording starts in 2
+[AudioDiag] Recording starts in 1
+[AudioDiag] Capture started
+[AudioDiag] RAW32_HEX
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+[AudioDiag] PCM16_FIRST
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+[AudioDiag] Capture complete
+[AudioDiag] Elapsed ms=3008
+[AudioDiag] Samples=144000
+[AudioDiag] Raw min=0
+[AudioDiag] Raw max=0
+[AudioDiag] Raw zero count=144000
+[AudioDiag] Raw -1 count=0
+[AudioDiag] PCM min=0
+[AudioDiag] PCM max=0
+[AudioDiag] PCM average=0
+[AudioDiag] PCM RMS=0
+[AudioDiag] PCM zero count=144000
+[AudioDiag] WAV bytes=288044
+[AudioDiag] Verdict=flat-or-disconnected
+[AudioDiag] WAV dump skipped because capture is flat
+[AudioDiag] Diagnostic cycle complete
+[AudioDiag] Cycle=3
+[AudioDiag] Put speech near the microphone now.
+[AudioDiag] Recording starts in 8
+[AudioDiag] Recording starts in 7
+[AudioDiag] Recording starts in 6
+[AudioDiag] Recording starts in 5
+[AudioDiag] Recording starts in 4
+[AudioDiag] Recording starts in 3
+[AudioDiag] Recording starts in 2
+[AudioDiag] Recording starts in 1
+[AudioDiag] Capture started
+[AudioDiag] RAW32_HEX
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+[AudioDiag] PCM16_FIRST
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+[AudioDiag] Capture complete
+[AudioDiag] Elapsed ms=3008
+[AudioDiag] Samples=144000
+[AudioDiag] Raw min=0
+[AudioDiag] Raw max=0
+[AudioDiag] Raw zero count=144000
+[AudioDiag] Raw -1 count=0
+[AudioDiag] PCM min=0
+[AudioDiag] PCM max=0
+[AudioDiag] PCM average=0
+[AudioDiag] PCM RMS=0
+[AudioDiag] PCM zero count=144000
+[AudioDiag] WAV bytes=288044
+[AudioDiag] Verdict=flat-or-disconnected
+[AudioDiag] WAV dump skipped because capture is flat
+[AudioDiag] Diagnostic cycle complete
+[AudioDiag] Cycle=4
+[AudioDiag] Put speech near the microphone now.
+[AudioDiag] Recording starts in 8
+[AudioDiag] Recording starts in 7
+[AudioDiag] Recording starts in 6
+[AudioDiag] Recording starts in 5
+[AudioDiag] Recording starts in 4
+[AudioDiag] Recording starts in 3
+[AudioDiag] Recording starts in 2
+[AudioDiag] Recording starts in 1
+[AudioDiag] Capture started
+[AudioDiag] RAW32_HEX
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+0x00000000
+[AudioDiag] PCM16_FIRST
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+0
+[AudioDiag] Capture complete
+[AudioDiag] Elapsed ms=3008
+[AudioDiag] Samples=144000
+[AudioDiag] Raw min=0
+[AudioDiag] Raw max=0
+[AudioDiag] Raw zero count=144000
+[AudioDiag] Raw -1 count=0
+[AudioDiag] PCM min=0
+[AudioDiag] PCM max=0
+[AudioDiag] PCM average=0
+[AudioDiag] PCM RMS=0
+[AudioDiag] PCM zero count=144000
+[AudioDiag] WAV bytes=288044
+[AudioDiag] Verdict=flat-or-disconnected
+[AudioDiag] WAV dump skipped because capture is flat
+[AudioDiag] Diagnostic cycle complete
