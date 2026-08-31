@@ -21,6 +21,14 @@ namespace
   constexpr i2s_port_t I2S_PORT = I2S_NUM_0;
   constexpr uint16_t I2S_DMA_BUFFER_COUNT = 8;
   constexpr uint16_t I2S_DMA_BUFFER_LENGTH = 1024;
+  constexpr bool DSP_ENABLED = true;
+  constexpr float DSP_HPF_CUTOFF_HZ = 80.0f;
+  constexpr float DSP_GAIN = 1.5f;
+  constexpr float DSP_PI = 3.14159265358979323846f;
+  constexpr float DSP_HPF_RC_SECONDS = 1.0f / (2.0f * DSP_PI * DSP_HPF_CUTOFF_HZ);
+  constexpr float DSP_HPF_DT_SECONDS = 1.0f / static_cast<float>(Config::AUDIO_SAMPLE_RATE);
+  constexpr float DSP_HPF_ALPHA =
+      DSP_HPF_RC_SECONDS / (DSP_HPF_RC_SECONDS + DSP_HPF_DT_SECONDS);
 
   uint8_t *allocateBytes(size_t length)
   {
@@ -63,6 +71,20 @@ namespace
     Serial.println(buffer);
   }
 
+  int16_t clampToPcm16(float value)
+  {
+    if (value > static_cast<float>(INT16_MAX))
+    {
+      return INT16_MAX;
+    }
+    if (value < static_cast<float>(INT16_MIN))
+    {
+      return INT16_MIN;
+    }
+
+    return static_cast<int16_t>(value);
+  }
+
 } // namespace
 
 AudioManager::AudioManager()
@@ -72,12 +94,15 @@ AudioManager::AudioManager()
       chunkReady_(false),
       retriedAlternateSlot_(false),
       sampleWindowPrinted_(false),
+      dspSessionActive_(false),
       currentSlot_(Config::AUDIO_PRIMARY_I2S_SLOT == 1 ? I2sSlot::RIGHT : I2sSlot::LEFT),
       chunkBuffer_(nullptr),
       chunkLength_(0),
       pcmBytesWritten_(0),
       chunkStartedMs_(0),
       i2sReadBuffer_(nullptr),
+      hpfPreviousInput_(0.0f),
+      hpfPreviousOutput_(0.0f),
       lastError_("not initialized"),
       minRaw_(INT32_MAX),
       maxRaw_(INT32_MIN),
@@ -158,11 +183,22 @@ bool AudioManager::start()
   lastError_ = "";
   retriedAlternateSlot_ = false;
   sampleWindowPrinted_ = false;
+  const bool startingDspSession = !dspSessionActive_;
+  if (startingDspSession)
+  {
+    resetDspState();
+  }
 
   if (!startI2sCapture())
   {
     clearCurrentChunk();
     return false;
+  }
+
+  if (startingDspSession)
+  {
+    dspSessionActive_ = true;
+    logDspConfig();
   }
 
   Serial.print("[Audio] Recording started on ");
@@ -180,6 +216,7 @@ void AudioManager::stop()
 
   recording_ = false;
   chunkReady_ = false;
+  dspSessionActive_ = false;
   pcmBytesWritten_ = 0;
   chunkLength_ = 0;
   clearCurrentChunk();
@@ -247,7 +284,7 @@ bool AudioManager::update()
        ++rawIndex)
   {
     int32_t rawSample = i2sReadBuffer_[rawIndex];
-    int16_t pcmSample = convertRawSample(rawSample);
+    int16_t pcmSample = applyDsp(convertRawSample(rawSample));
     updateStats(rawSample, pcmSample);
 
     if (debugPcmCount < Config::AUDIO_DEBUG_SAMPLE_COUNT)
@@ -534,6 +571,43 @@ bool AudioManager::finalizeChunk()
 int16_t AudioManager::convertRawSample(int32_t rawSample) const
 {
   return static_cast<int16_t>(rawSample >> Config::AUDIO_PCM_RIGHT_SHIFT);
+}
+
+int16_t AudioManager::applyDsp(int16_t sample)
+{
+  if (!DSP_ENABLED)
+  {
+    return sample;
+  }
+
+  float input = static_cast<float>(sample);
+  float filtered = DSP_HPF_ALPHA * (hpfPreviousOutput_ + input - hpfPreviousInput_);
+  hpfPreviousInput_ = input;
+  hpfPreviousOutput_ = filtered;
+
+  return clampToPcm16(filtered * DSP_GAIN);
+}
+
+void AudioManager::resetDspState()
+{
+  hpfPreviousInput_ = 0.0f;
+  hpfPreviousOutput_ = 0.0f;
+}
+
+void AudioManager::logDspConfig() const
+{
+  if (!DSP_ENABLED)
+  {
+    return;
+  }
+
+  Serial.println("Audio DSP: Basic DSP");
+  Serial.print("HPF: ");
+  Serial.print(DSP_HPF_CUTOFF_HZ, 0);
+  Serial.println(" Hz");
+  Serial.print("Gain: ");
+  Serial.print(DSP_GAIN, 2);
+  Serial.println("x");
 }
 
 void AudioManager::updateStats(int32_t rawSample, int16_t sample)

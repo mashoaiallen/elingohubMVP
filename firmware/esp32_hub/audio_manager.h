@@ -49,6 +49,9 @@ class AudioManager {
   const char *slotName(I2sSlot slot) const;
   i2s_channel_fmt_t channelFormat(I2sSlot slot) const;
   int16_t convertRawSample(int32_t rawSample) const;
+  int16_t applyDsp(int16_t sample);
+  void resetDspState();
+  void logDspConfig() const;
   void updateStats(int32_t rawSample, int16_t sample);
   void writeSample(int16_t sample);
   void resetChunkStats();
@@ -64,12 +67,15 @@ class AudioManager {
   bool chunkReady_;
   bool retriedAlternateSlot_;
   bool sampleWindowPrinted_;
+  bool dspSessionActive_;
   I2sSlot currentSlot_;
   uint8_t *chunkBuffer_;
   size_t chunkLength_;
   uint32_t pcmBytesWritten_;
   uint32_t chunkStartedMs_;
   int32_t *i2sReadBuffer_;
+  float hpfPreviousInput_;
+  float hpfPreviousOutput_;
   String lastError_;
   int32_t minRaw_;
   int32_t maxRaw_;
