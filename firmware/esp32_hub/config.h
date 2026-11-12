@@ -7,7 +7,7 @@
 // from the gitignored secrets.h on first boot.
 namespace Config {
 
-constexpr const char *FIRMWARE_VERSION = "0.3.0-m2";
+constexpr const char *FIRMWARE_VERSION = "0.3.1-m2";
 
 // ---- Student network (soft-AP) ------------------------------------------------------------
 constexpr const char *AP_SSID = "eLingo-Hub";

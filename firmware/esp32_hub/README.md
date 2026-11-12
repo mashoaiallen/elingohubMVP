@@ -16,7 +16,7 @@ Board: Waveshare ESP32-S3-DEV-KIT-N32R16V (32 MB octal flash, 16 MB octal PSRAM)
 | RGB LED module | G | 12 | same pin as the original green LED |
 | RGB LED module | B | **13** | **new wire** |
 | RGB LED module | common (–, GND) | GND | the long leg on a bare RGB LED |
-| Push button | – | 10 | other side to GND (internal pull-up) |
+| Push button | – | **9** | other side to GND (internal pull-up). Was GPIO10 up to firmware 0.3.0-m2; wire it straight to the pin, not through a breadboard rail |
 
 The LED is driven **active-HIGH** (GPIO HIGH = colour on). Each colour needs its own series
 resistor. Many modules already have them; look for three small resistors on the module's
@@ -25,7 +25,7 @@ about 3 V, which leaves little headroom on a 3.3 V pin. Keep each channel under 
 
 Why these pins: they are 3.3 V I/O and not strapping pins (0, 3, 45, 46). They are not used by
 the octal flash/PSRAM (26–37), the USB port (19, 20), UART0 (43, 44), the microphone (4, 5, 6)
-or the button (10). The board's own WS2812 LED is on GPIO38. The 16×2 LCD is no longer used and
+or the button (9). The board's own WS2812 LED is on GPIO38. The 16×2 LCD is no longer used and
 can be removed; its pins 7 and 15 are now free. Do not use GPIO 47/48: they are 1.8 V on this
 module.
 
