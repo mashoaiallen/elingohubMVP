@@ -26,7 +26,10 @@ import {
   ttsAudioTokens,
 } from "./providers.ts";
 
-export const MAX_PROVIDER_ATTEMPTS = 3;
+export const MAX_PROVIDER_ATTEMPTS = 3; // Deepgram
+// Translation/TTS failures fall back to the lecturer's original audio at once; only our own
+// storage upload is retried (once).
+export const MAX_TTS_ATTEMPTS = 2;
 export const WAIT_DELAY_SEC = 2;
 
 export interface DbError {
@@ -331,7 +334,7 @@ export interface TtsMessage {
 interface TtsBegin {
   action: "process" | "skip" | "final";
   reason: string | null;
-  method: "tts" | "passthrough";
+  method: "tts" | "passthrough" | "fallback";
   job: { id: number; attempts: number; translatedText: string | null; language: string };
   utterance: { id: number; seq: number; text: string | null; language: string | null; startSeq: number; startMs: number; endSeq: number; endMs: number };
   session: { id: string; hubId: string };
@@ -339,6 +342,8 @@ interface TtsBegin {
   sourceLanguageName: string | null;
   context: { source: string; target: string | null }[];
   chunks: { seq: number; path: string; durationMs: number }[];
+  chunksComplete?: boolean;
+  cooldowns?: { translate: string | null; tts: string | null };
   translateModel: string;
   translateThinking: string;
 }
@@ -381,82 +386,131 @@ export async function processTtsMessage(db: AiDb, msg: TtsMessage, p: Providers)
 
   const lang = b.language.code;
   const base = { sessionId: b.session.id, utteranceId: b.utterance.id, language: lang, attempt: b.job.attempts };
-  let stage = "translate";
-  try {
-    let audio: PcmAudio;
-    if (b.method === "passthrough") {
-      stage = "passthrough";
-      audio = await lecturerAudio(db, b);
-    } else {
-      let text = b.job.translatedText;
-      if (!text) {
-        const t0 = performance.now();
-        try {
-          const t = await geminiTranslate({
-            apiKey: p.geminiKey,
-            api: p.geminiApi,
-            model: b.translateModel,
-            thinkingLevel: b.translateThinking,
-            sourceLanguage: b.sourceLanguageName,
-            targetLanguage: { code: lang, name: b.language.name },
-            text: b.utterance.text ?? "",
-            context: b.context,
-            fetch: p.fetch,
-          });
-          text = t.text;
-          await usage(db, {
-            ...base, provider: "gemini", operation: "translate", model: b.translateModel, status: "ok",
-            items: [
-              { unitType: "input_tokens", units: t.usage.inputTokens },
-              { unitType: "output_tokens", units: t.usage.outputTokens + t.usage.thoughtTokens },
-            ],
-            latencyMs: performance.now() - t0, requestId: t.requestId,
-            meta: { thoughtTokens: t.usage.thoughtTokens },
-          });
-        } catch (e) {
-          await usage(db, { ...base, provider: "gemini", operation: "translate", model: b.translateModel, status: "error", items: [], latencyMs: performance.now() - t0, error: (e as Error).message });
-          throw e;
-        }
-        await call(db, "worker_tts_save_translation", { p_job_id: b.job.id, p_text: text });
-      }
-      stage = "tts";
-      const model = b.language.ttsModel ?? "gemini-3.8-flash-tts";
-      const t0 = performance.now();
-      try {
-        const sp = await geminiSynthesize({ apiKey: p.geminiKey, api: p.geminiApi, model, voice: b.language.ttsVoice ?? "Kore", text, fetch: p.fetch });
-        audio = sp.audio;
-        await usage(db, {
-          ...base, provider: "gemini", operation: "tts", model, status: "ok",
-          items: [
-            { unitType: "input_tokens", units: sp.usage.inputTokens },
-            { unitType: "audio_output_tokens", units: sp.usage.outputTokens || ttsAudioTokens(durationMs(sp.audio)) },
-          ],
-          latencyMs: performance.now() - t0, requestId: sp.requestId,
-          meta: { audioMs: durationMs(sp.audio), sampleRate: sp.audio.sampleRate },
-        });
-      } catch (e) {
-        await usage(db, { ...base, provider: "gemini", operation: "tts", model, status: "error", items: [], latencyMs: performance.now() - t0, error: (e as Error).message });
-        throw e;
-      }
-    }
-    if (audio.samples.length === 0) throw new ProviderError(stage, "no audio produced", false);
 
-    stage = "store";
+  /** Stores audio for this job and marks it ready. */
+  async function deliver(audio: PcmAudio, mode: "ai" | "passthrough" | "fallback", note: string | null = null) {
+    if (audio.samples.length === 0) throw new ProviderError("audio", "no audio produced", false);
     const wav = encodeAdpcmWav(audio);
     const path = segmentPath(b.session.hubId, b.session.id, lang, b.utterance.seq);
     const { error } = await db.storage.from("translated-audio").upload(path, wav, { contentType: "audio/wav", upsert: true });
     if (error) throw new ProviderError("storage", error.message, true);
-    await commit("ready", { p_path: path, p_bytes: wav.length, p_duration_ms: durationMs(audio) });
+    await commit("ready", { p_path: path, p_bytes: wav.length, p_duration_ms: durationMs(audio), p_error: note, p_mode: mode });
+  }
+
+  /** The lecturer's own audio for this utterance: what every listener gets when Gemini fails. */
+  async function fallback(reason: string): Promise<TtsResult> {
+    try {
+      if (!b.chunks.length) throw new Error("source audio no longer available");
+      await deliver(await lecturerAudio(db, b), "fallback", `original audio: ${reason}`);
+      await log(db, "warn", "fallback", `original audio delivered: ${reason}`, null, { jobId: b.job.id }, lang);
+      return { msgId: msg.msg_id, outcome: "fallback", error: reason };
+    } catch (e) {
+      const m = `${reason}; fallback failed: ${(e as Error).message}`;
+      await commit("failed", { p_error: m });
+      return { msgId: msg.msg_id, outcome: "failed", error: m };
+    }
+  }
+
+  if (b.method === "passthrough") {
+    try {
+      await deliver(await lecturerAudio(db, b), "passthrough");
+      return { msgId: msg.msg_id, outcome: "ready" };
+    } catch (e) {
+      await commit("failed", { p_error: (e as Error).message });
+      return { msgId: msg.msg_id, outcome: "failed", error: (e as Error).message };
+    }
+  }
+  if (b.method === "fallback") return await fallback("session cost cap reached");
+
+  const ttsModel = b.language.ttsModel ?? "gemini-3.8-flash-tts";
+  const now = Date.now();
+  const cooling = (until: string | null | undefined) => !!until && Date.parse(until) > now;
+  // A rate-limited model is not called again until its cool-down ends: no wasted requests, and
+  // listeners get the original audio straight away instead of waiting for retries.
+  if (!b.job.translatedText && cooling(b.cooldowns?.translate)) return await fallback(`${b.translateModel} rate-limited`);
+  if (cooling(b.cooldowns?.tts)) return await fallback(`${ttsModel} rate-limited`);
+
+  let stage = "translate";
+  let model = b.translateModel;
+  try {
+    let text = b.job.translatedText;
+    if (!text) {
+      const t0 = performance.now();
+      try {
+        const t = await geminiTranslate({
+          apiKey: p.geminiKey,
+          api: p.geminiApi,
+          model: b.translateModel,
+          thinkingLevel: b.translateThinking,
+          sourceLanguage: b.sourceLanguageName,
+          targetLanguage: { code: lang, name: b.language.name },
+          text: b.utterance.text ?? "",
+          context: b.context,
+          fetch: p.fetch,
+        });
+        text = t.text;
+        await usage(db, {
+          ...base, provider: "gemini", operation: "translate", model: b.translateModel, status: "ok",
+          items: [
+            { unitType: "input_tokens", units: t.usage.inputTokens },
+            { unitType: "output_tokens", units: t.usage.outputTokens + t.usage.thoughtTokens },
+          ],
+          latencyMs: performance.now() - t0, requestId: t.requestId,
+          meta: { thoughtTokens: t.usage.thoughtTokens },
+        });
+      } catch (e) {
+        await usage(db, { ...base, provider: "gemini", operation: "translate", model: b.translateModel, status: "error", items: [], latencyMs: performance.now() - t0, error: (e as Error).message });
+        throw e;
+      }
+      await call(db, "worker_tts_save_translation", { p_job_id: b.job.id, p_text: text });
+    }
+    stage = "tts";
+    model = ttsModel;
+    const t0 = performance.now();
+    let audio: PcmAudio;
+    try {
+      const sp = await geminiSynthesize({ apiKey: p.geminiKey, api: p.geminiApi, model: ttsModel, voice: b.language.ttsVoice ?? "Kore", text, fetch: p.fetch });
+      audio = sp.audio;
+      await usage(db, {
+        ...base, provider: "gemini", operation: "tts", model: ttsModel, status: "ok",
+        items: [
+          { unitType: "input_tokens", units: sp.usage.inputTokens },
+          { unitType: "audio_output_tokens", units: sp.usage.outputTokens || ttsAudioTokens(durationMs(sp.audio)) },
+        ],
+        latencyMs: performance.now() - t0, requestId: sp.requestId,
+        meta: { audioMs: durationMs(sp.audio), sampleRate: sp.audio.sampleRate },
+      });
+    } catch (e) {
+      await usage(db, { ...base, provider: "gemini", operation: "tts", model: ttsModel, status: "error", items: [], latencyMs: performance.now() - t0, error: (e as Error).message });
+      throw e;
+    }
+    stage = "store";
+    await deliver(audio, "ai");
     return { msgId: msg.msg_id, outcome: "ready" };
   } catch (e) {
     const err = e instanceof ProviderError ? e : new ProviderError(stage, (e as Error).message, true);
     await log(db, "error", stage, err.message, null, { jobId: b.job.id, attempt: b.job.attempts, retryable: err.retryable }, lang);
-    if (err.retryable && b.job.attempts < MAX_PROVIDER_ATTEMPTS) {
-      await call(db, "worker_tts_retry", { p_job_id: b.job.id, p_msg_id: msg.msg_id, p_delay_sec: backoffSec(b.job.attempts, err.retryAfterSec), p_error: err.message });
-      return { msgId: msg.msg_id, outcome: "retry", error: err.message };
+    if (stage === "store") {
+      // Our own storage hiccup: the provider work is done, so retrying the upload is cheap.
+      if (err.retryable && b.job.attempts < MAX_TTS_ATTEMPTS) {
+        await call(db, "worker_tts_retry", { p_job_id: b.job.id, p_msg_id: msg.msg_id, p_delay_sec: 2, p_error: err.message });
+        return { msgId: msg.msg_id, outcome: "retry", error: err.message };
+      }
+    } else {
+      // Live speech cannot wait for retries: the original audio now beats a translation 10 s
+      // late. The failing model is cooled down so the next sentences skip it immediately too:
+      // rate limit/quota -> the provider's retry time (60 s if none); overload/timeout/5xx ->
+      // 15 s; rejected key -> 5 min. Other errors (a bad response) affect only this sentence.
+      const seconds = err.status === 429 ? err.retryAfterSec ?? 60
+        : err.status === 401 || err.status === 403 ? 300
+        : err.retryable ? Math.max(15, err.retryAfterSec ?? 0)
+        : 0;
+      if (seconds > 0) {
+        await call(db, "worker_provider_cooldown", { p_key: `gemini:${model}`, p_seconds: seconds, p_reason: err.message.slice(0, 300) });
+      }
+      if (err.status === 429) return await fallback(`${model} rate-limited`);
     }
-    await commit("failed", { p_error: err.message });
-    return { msgId: msg.msg_id, outcome: "failed", error: err.message };
+    return await fallback(`${stage} failed: ${err.message.slice(0, 200)}`);
   }
 }
 

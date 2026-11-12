@@ -300,25 +300,23 @@ Deno.test("final listener left: queued job is skipped without any provider call"
   assertEquals(named("worker_tts_commit")[0].args.p_status, "skipped_no_listeners");
 });
 
-Deno.test("TTS timeout after a successful translation: retry does not translate (or bill) again", async () => {
-  let begin = ttsBegin();
-  const { db, named } = fakeDb({
-    worker_tts_begin: () => begin,
-    worker_tts_save_translation: (a) => {
-      begin = ttsBegin({ job: { id: 55, attempts: 2, translatedText: a.p_text, language: "af" } });
-    },
-  });
-  let ttsCalls = 0;
-  const net = fakeFetch((_u, body) => {
-    if ((body as Record<string, unknown>).response_format) return ++ttsCalls === 1 ? new Response("timeout", { status: 504 }) : geminiAudio(1000);
-    return geminiText("Energie word behou.");
-  });
-  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "retry");
-  assertEquals(named("worker_tts_retry")[0].args.p_delay_sec, 2);
+Deno.test("TTS error after a successful translation: original audio now, translation billed once and kept", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch((_u, body) =>
+    (body as Record<string, unknown>).response_format ? new Response("timeout", { status: 504 }) : geminiText("Energie word behou."));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(net.reqs.length, 2); // one translation, one TTS attempt, no retries
+  assertEquals(named("worker_tts_save_translation")[0].args.p_text, "Energie word behou.");
+  assertEquals(named("worker_tts_retry").length, 0);
+  assertEquals(named("worker_provider_cooldown")[0].args.p_seconds, 15);
+});
+
+Deno.test("a stored translation is reused: no second translation request", async () => {
+  const { db } = fakeDb({ worker_tts_begin: () => withSource({ job: { id: 55, attempts: 2, translatedText: "Energie word behou.", language: "af" } }) }, sourceFiles(1));
+  const net = fakeFetch(() => geminiAudio(1000));
   assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "ready");
-  const translations = net.reqs.filter((r) => !(r.body as Record<string, unknown>).response_format);
-  assertEquals(translations.length, 1); // billed once
-  assertEquals(ttsCalls, 2);
+  assertEquals(net.reqs.length, 1);
+  assert((net.reqs[0].body as Record<string, unknown>).response_format);
 });
 
 Deno.test("TTS gives up after the last attempt and records the failure", async () => {
@@ -382,4 +380,83 @@ Deno.test("PCM and ADPCM uploads are both accepted as source audio", async () =>
     assertEquals((await processSttMessage(db, msg(1), { ...PROV, fetch: net.f })).outcome, "done");
     assert(decodeWav(net.reqs[0].init!.body as Uint8Array).samples.length === 80000);
   }
+});
+
+// ------------------------------------------------------------------ original-audio fallback
+
+// Utterance spans 0.2 s..1.5 s of chunk 1 -> 1.3 s + 2 x 150 ms padding of the lecturer's audio.
+const withSource = (over: Record<string, unknown> = {}) =>
+  ttsBegin({ chunks: [{ seq: 1, path: chunk(1).path, durationMs: 5000 }], chunksComplete: true, ...over });
+
+Deno.test("fallback: Gemini rate limit -> model cooled down, listeners get the original audio at once", async () => {
+  const { db, named, uploads } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch(() => new Response(JSON.stringify({ error: { message: "Rate limit exceeded (limit: 5 requests per minute on Free Tier). Please retry in 32s" } }), { status: 429 }));
+  const r = await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f });
+  assertEquals(r.outcome, "fallback");
+  assertEquals(net.reqs.length, 1); // no retries that would burn quota
+  assertEquals(named("worker_provider_cooldown")[0].args, { p_key: "gemini:gemini-3.8-flash", p_seconds: 32, p_reason: named("worker_provider_cooldown")[0].args.p_reason });
+  assertEquals(named("worker_tts_retry").length, 0);
+  const c = named("worker_tts_commit")[0].args;
+  assertEquals([c.p_status, c.p_mode, c.p_duration_ms], ["ready", "fallback", 1600]);
+  assertEquals(uploads[0].path, segmentPath(HUB, SESSION, "af", 3));
+});
+
+Deno.test("fallback: while a model is cooling down, Gemini is not called at all", async () => {
+  const until = new Date(Date.now() + 30_000).toISOString();
+  for (const cooldowns of [{ translate: until, tts: null }, { translate: null, tts: until }]) {
+    const { db, named } = fakeDb({ worker_tts_begin: () => withSource({ cooldowns }) }, sourceFiles(1));
+    const net = fakeFetch(() => geminiText("unused"));
+    const r = await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f });
+    assertEquals([r.outcome, net.reqs.length], ["fallback", 0]);
+    assertEquals(named("worker_tts_commit")[0].args.p_mode, "fallback");
+  }
+});
+
+Deno.test("fallback: TTS rate-limited after a successful translation still gives original audio", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch((_u, body) =>
+    (body as Record<string, unknown>).response_format ? new Response("quota", { status: 429 }) : geminiText("Energie word behou."));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(named("worker_provider_cooldown")[0].args.p_key, "gemini:gemini-3.8-flash-lite-tts");
+  assertEquals(named("worker_provider_cooldown")[0].args.p_seconds, 60); // no hint -> 60 s
+});
+
+Deno.test("fallback: overload (503) -> original audio at once and a 15 s cool-down", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch(() => new Response("high demand", { status: 503 }));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(net.reqs.length, 1);
+  assertEquals(named("worker_tts_retry").length, 0);
+  assertEquals(named("worker_provider_cooldown")[0].args.p_seconds, 15);
+  assertEquals(named("worker_tts_commit")[0].args.p_mode, "fallback");
+});
+
+Deno.test("fallback: a rejected key cools the model down for 5 minutes", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch(() => new Response("API key not valid", { status: 403 }));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(named("worker_provider_cooldown")[0].args.p_seconds, 300);
+});
+
+Deno.test("fallback: a bad response (400) goes straight to original audio, no cool-down", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource() }, sourceFiles(1));
+  const net = fakeFetch(() => new Response("bad request", { status: 400 }));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(named("worker_tts_retry").length, 0);
+  assertEquals(named("worker_provider_cooldown").length, 0);
+});
+
+Deno.test("fallback: over the cost cap, original audio without any provider call", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => withSource({ method: "fallback" }) }, sourceFiles(1));
+  const net = fakeFetch(() => geminiText("unused"));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "fallback");
+  assertEquals(net.reqs.length, 0);
+  assertEquals(named("worker_tts_commit")[0].args.p_mode, "fallback");
+});
+
+Deno.test("fallback impossible (source audio already deleted): job fails, nothing played", async () => {
+  const { db, named } = fakeDb({ worker_tts_begin: () => ttsBegin({ chunks: [] }) });
+  const net = fakeFetch(() => new Response("quota", { status: 429 }));
+  assertEquals((await processTtsMessage(db, ttsMsg(), { ...PROV, fetch: net.f })).outcome, "failed");
+  assertEquals(named("worker_tts_commit")[0].args.p_status, "failed");
 });

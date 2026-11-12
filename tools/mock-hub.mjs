@@ -3,7 +3,7 @@
 // browser without hardware. Serves firmware/esp32_hub/data and the same /api/* endpoints,
 // producing a synthetic 5 s tone segment per language that has listeners.
 //
-//   node tools/mock-hub.mjs [--port 8765] [--no-session] [--interval 5000] [--pcm]
+//   node tools/mock-hub.mjs [--port 8765] [--no-session] [--interval 5000] [--pcm] [--fallback-every N]
 //
 // Segments are IMA ADPCM WAVs like the Milestone 2 cloud produces (--pcm: 16-bit PCM instead).
 //
@@ -54,7 +54,9 @@ setInterval(() => {
     const wav = args.pcm ? pcm : encodeAdpcmWav(decodeWav(pcm));
     wavs.set(`${lang}:${seq}`, wav);
     const list = segments.get(lang) ?? [];
-    list.push({ seq, durationMs: intervalMs, bytes: wav.length, at: now });
+    const fallbackEvery = Number(args["fallback-every"] || 0);
+    list.push({ seq, durationMs: intervalMs, bytes: wav.length, at: now,
+      ...(fallbackEvery && seq % fallbackEvery === 0 ? { original: true } : {}) });
     while (list.length > 12) wavs.delete(`${lang}:${list.shift().seq}`);
     segments.set(lang, list);
   }
@@ -111,7 +113,8 @@ createServer(async (req, res) => {
     const after = Number(url.searchParams.get("after") ?? -1);
     return json(res, 200, { language: lang, session: sessionNumber, sessionActive, latestSeq: latest(lang),
       segments: fresh(lang).filter((s) => s.seq > after)
-        .map((s) => ({ seq: s.seq, durationMs: s.durationMs, bytes: s.bytes, ageMs: Date.now() - s.at })) });
+        .map((s) => ({ seq: s.seq, durationMs: s.durationMs, bytes: s.bytes, ageMs: Date.now() - s.at,
+          ...(s.original ? { original: true } : {}) })) });
   }
   if (p === "/api/audio") {
     const lang = url.searchParams.get("lang");

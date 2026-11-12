@@ -526,6 +526,7 @@ bool CloudSync::doPoll(uint32_t now) {
     // Translated segments are numbered per utterance; their age is judged by the source chunk.
     d.chunkSeq = seg["chunkSeq"] | d.seq;
     d.durationMs = seg["durationMs"] | 0;
+    d.original = seg["original"] | false;
     strncpy(d.lang, seg["lang"] | "", sizeof(d.lang) - 1);
     d.lang[sizeof(d.lang) - 1] = '\0';
     d.path = seg["path"] | "";
@@ -582,7 +583,7 @@ bool CloudSync::downloadNext(uint32_t now) {
   bool playable = length > kMinPlayableBytes;
   bool stored = false;
   if (playable) {
-    stored = segments_.put(seg.lang, seg.id, seg.seq, seg.durationMs, data, length);  // takes ownership
+    stored = segments_.put(seg.lang, seg.id, seg.seq, seg.durationMs, data, length, seg.original);  // takes ownership
   } else {
     free(data);
   }
@@ -591,8 +592,8 @@ bool CloudSync::downloadNext(uint32_t now) {
     // from the cloud and stored on the Hub, ready for phones.
     session_.setTranslating(true);
   }
-  Serial.printf("[Cloud] Segment %s/%lu (%u bytes) %s in %lu ms\n", seg.lang, static_cast<unsigned long>(seg.seq),
-                static_cast<unsigned>(length), stored ? "stored" : "rejected",
+  Serial.printf("[Cloud] Segment %s/%lu (%u bytes%s) %s in %lu ms\n", seg.lang, static_cast<unsigned long>(seg.seq),
+                static_cast<unsigned>(length), seg.original ? ", original audio" : "", stored ? "stored" : "rejected",
                 static_cast<unsigned long>(millis() - t0));
   advance();
   return true;

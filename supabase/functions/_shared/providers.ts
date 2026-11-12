@@ -236,7 +236,8 @@ export async function geminiTranslate(o: TranslateOptions): Promise<Translation>
       contents: [{ role: "user", parts: [{ text: input }] }],
       generationConfig: { thinkingConfig: { thinkingLevel: thinking }, maxOutputTokens: 2048 },
     };
-  const res = await geminiCall({ ...o, api, timeoutMs: o.timeoutMs ?? 30_000 }, body);
+  // Live speech: a translation slower than this is replaced by the original audio.
+  const res = await geminiCall({ ...o, api, timeoutMs: o.timeoutMs ?? 8_000 }, body);
   let text = "";
   if (api === "interactions") {
     text = interactionOutputs(res)
@@ -298,7 +299,7 @@ export async function geminiSynthesize(o: SynthesizeOptions): Promise<Speech> {
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: o.voice } } },
       },
     };
-  const res = await geminiCall({ ...o, api, timeoutMs: o.timeoutMs ?? 45_000 }, body);
+  const res = await geminiCall({ ...o, api, timeoutMs: o.timeoutMs ?? 15_000 }, body);
   // deno-lint-ignore no-explicit-any
   let part: { data: string; mime: string } | null = null;
   if (api === "interactions") {

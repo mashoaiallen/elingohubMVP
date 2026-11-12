@@ -114,6 +114,7 @@ class CloudSync {
     uint32_t seq;
     uint32_t chunkSeq;  // source chunk the audio ends in (= seq for loopback); used for the live-lag rule
     uint32_t durationMs;
+    bool original;  // cloud fell back to the lecturer's original audio
     char lang[8];
     String path;
   };

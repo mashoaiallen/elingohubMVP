@@ -55,7 +55,7 @@ async function poll() {
     writeFileSync(file, encodePcmWav(pcm)); // PCM copy so any player can open it
     const delay = (Date.now() - uploadedAt.get(s.chunkSeq)) / 1000;
     got.set(s.id, { ...s, bytes: bytes.length, rate: pcm.sampleRate, ms: Math.round(pcm.samples.length / pcm.sampleRate * 1000), delay });
-    console.log(`  ${s.lang} #${s.seq} (ends in chunk ${s.chunkSeq}): ${bytes.length} B, ${pcm.sampleRate} Hz, ` +
+    console.log(`  ${s.lang} #${s.seq} ${s.original ? "ORIGINAL AUDIO (translation unavailable)" : "translated"} (ends in chunk ${s.chunkSeq}): ${bytes.length} B, ${pcm.sampleRate} Hz, ` +
       `${(pcm.samples.length / pcm.sampleRate).toFixed(1)} s audio, ready ${delay.toFixed(1)} s after that chunk was uploaded`);
   }
 }
@@ -93,7 +93,7 @@ const per = Object.fromEntries(active.map((l) => [l, [...got.values()].filter((s
 console.log("\nSummary");
 for (const [l, segs] of Object.entries(per)) {
   const d = segs.map((s) => s.delay).sort((a, b) => a - b);
-  console.log(`  ${l}: ${segs.length} segments, ${(segs.reduce((n, s) => n + s.ms, 0) / 1000).toFixed(1)} s audio` +
+  console.log(`  ${l}: ${segs.length} segments (${segs.filter((s) => s.original).length} original audio), ${(segs.reduce((n, s) => n + s.ms, 0) / 1000).toFixed(1)} s audio` +
     (d.length ? `, delay after chunk upload min ${d[0].toFixed(1)} / median ${d[Math.floor(d.length / 2)].toFixed(1)} / max ${d[d.length - 1].toFixed(1)} s` : ""));
 }
 console.log(`session ${session.id}\naudio written to ${outDir}`);

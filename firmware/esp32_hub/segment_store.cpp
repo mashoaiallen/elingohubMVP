@@ -92,7 +92,7 @@ bool SegmentStore::evictOldestLocked() {
 }
 
 bool SegmentStore::put(const char *lang, int64_t id, uint32_t seq, uint32_t durationMs, uint8_t *data,
-                       size_t length) {
+                       size_t length, bool original) {
   Lock lock(mutex_);
   Ring *ring = ringFor(lang, true);
   if (ring == nullptr || length > Config::MAX_SEGMENT_BYTES) {
@@ -120,6 +120,7 @@ bool SegmentStore::put(const char *lang, int64_t id, uint32_t seq, uint32_t dura
   segment->length = length;
   segment->refs = 0;
   segment->evicted = false;
+  segment->original = original;
   strncpy(segment->lang, lang, sizeof(segment->lang) - 1);
   segment->lang[sizeof(segment->lang) - 1] = '\0';
 
@@ -181,6 +182,9 @@ uint8_t SegmentStore::list(const char *lang, int32_t afterSeq, JsonArray out) co
       o["durationMs"] = s->durationMs;
       o["bytes"] = s->length;
       o["ageMs"] = now - s->receivedMs;  // the page only joins at a segment that is still recent
+      if (s->original) {
+        o["original"] = true;  // page shows "translation unavailable" while it plays
+      }
       ++n;
     }
   }

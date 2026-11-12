@@ -81,6 +81,7 @@ supabase db query --remote --read-only "select operation, model, language_code, 
 | P14 | Sustained lecture | 45–60 min, two languages | No resets (`hubs.last_stats.reset` unchanged), `dropped` 0, `deadChunks` 0, free heap stable. Translation continues to the end | |
 | P15 | Costs | After P14 | Record `session_summary.cost_usd` and `session_usage`. Compare with the estimate in the report (~$2.50/h for af + st) | |
 | P16 | Hub reboot | Reset the Hub mid-session | The Hub resumes the session, phones recover, and nobody hears the lecture again from the start | |
+| P17 | Translation unavailable | Free-tier Gemini key, or temporarily set `GEMINI_API_KEY` to an invalid value | Students still hear every sentence, as the lecturer's original voice. The page shows "Original audio · translation unavailable". Serial shows `original audio`. `session_summary.segments_original_fallback` > 0 | |
 
 ## 4. What to send back
 

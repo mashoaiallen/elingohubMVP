@@ -392,7 +392,9 @@
                     self.cursor = seg.seq;
                     var key = session + '|' + lang;
                     self.played[key] = Math.max(self.playedFloor(session, lang), seg.seq);
-                    setPlayState('Playing');
+                    // Translation failed for this part (e.g. provider limit): the cloud sent the
+                    // lecturer's own words instead of silence.
+                    setPlayState(seg.original ? 'Original audio · translation unavailable' : 'Playing');
                     setMessage('');
                   });
               });

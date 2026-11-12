@@ -212,8 +212,32 @@ begin
   perform public._emit_utterances(sess, '[{"text":"Four.","language":"en","startSeq":5,"startMs":0,"endSeq":5,"endMs":500}]'::jsonb);
   r := public.worker_tts_begin((select j.id from public.translation_jobs j join public.utterances u on u.id = j.utterance_id
                                 where u.session_id = sess and u.text = 'Four.'));
-  t := t || pg_temp.tap(r ->> 'action' = 'skip' and r ->> 'reason' = 'failed', 'session over the cost cap: no further provider calls');
+  t := t || pg_temp.tap(r ->> 'action' = 'process' and r ->> 'method' = 'fallback', 'session over the cost cap: original audio, no further provider calls');
   update public.sessions set cost_usd = 0 where id = sess;
+
+  -- ------------------------------------------------------------------ original-audio fallback
+  perform public.worker_provider_cooldown('gemini:gemini-3.8-flash', 30, 'free tier 5 rpm');
+  perform public.worker_provider_cooldown('gemini:gemini-3.8-flash', 5, 'shorter hint');
+  t := t || pg_temp.tap((select until from public.provider_cooldowns where key = 'gemini:gemini-3.8-flash') > now() + interval '25 seconds',
+                        'a cool-down is never shortened by a later, shorter hint');
+  perform public._emit_utterances(sess, '[{"text":"Five.","language":"en","startSeq":1,"startMs":0,"endSeq":1,"endMs":900}]'::jsonb);
+  select j.id into j2 from public.translation_jobs j join public.utterances u on u.id = j.utterance_id
+   where u.session_id = sess and u.text = 'Five.' and j.language_code = 'af';
+  r := public.worker_tts_begin(j2);
+  t := t || pg_temp.tap(r ->> 'method' = 'tts' and r -> 'cooldowns' ->> 'translate' is not null and r ->> 'chunksComplete' = 'true'
+                        and jsonb_array_length(r -> 'chunks') = 1, 'job sees the cool-down and has the source audio for a fallback');
+  perform public.worker_tts_commit(j2, null, 'ready', hub_a::text || '/' || sess::text || '/af/u000099.wav', 5000, 1200, 'original audio: rate-limited', 'fallback');
+  t := t || pg_temp.tap((select mode from public.segments where utterance_id = (select utterance_id from public.translation_jobs where id = j2)) = 'fallback'
+                        and (select method from public.translation_jobs where id = j2) = 'fallback', 'fallback segment recorded as original audio');
+  -- Earlier jobs left open by the tests above would (correctly) hold this later segment back.
+  update public.translation_jobs set status = 'failed' where session_id = sess and status in ('queued', 'processing');
+  perform pg_temp.as_hub(user_a);
+  r := public.hub_poll(sess, 0, '{af}');
+  t := t || pg_temp.tap(exists (select 1 from jsonb_array_elements(r -> 'segments') e where (e ->> 'original')::boolean)
+                        and exists (select 1 from jsonb_array_elements(r -> 'segments') e where not (e ->> 'original')::boolean),
+                        'Hub is told which segments are original audio');
+  perform pg_temp.as_admin();
+  t := t || pg_temp.tap((select segments_original_fallback from public.session_summary where session_id = sess) = 1, 'fallback share reported per session');
 
   -- ------------------------------------------------------------------ same language as the lecturer
   perform pg_temp.as_hub(user_a);
@@ -235,7 +259,7 @@ begin
   t := t || pg_temp.tap(public.worker_stt_flush_begin(sess) ->> 'action' = 'final', 'flush happens only once');
 
   update public.segments set ready_at = now() - interval '20 minutes' where session_id = sess;
-  t := t || pg_temp.tap((select count(*) from public.worker_cleanup_candidates(500) c where c.kind = 'segment' and c.path like hub_a::text || '/' || sess::text || '/af/u%') = 3,
+  t := t || pg_temp.tap((select count(*) from public.worker_cleanup_candidates(500) c where c.kind = 'segment' and c.path like hub_a::text || '/' || sess::text || '/af/u%') = 4,
                         'translated segments expire after 15 minutes');
   update public.utterances set created_at = now() - interval '2 days' where session_id = sess;
   update public.transcripts set created_at = now() - interval '2 days' where chunk_id in (c1, c2);

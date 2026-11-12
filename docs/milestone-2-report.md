@@ -107,6 +107,30 @@ is cut from the source chunks: no translation and no TTS, at zero cost.
 The real-API verification of these response shapes is the opt-in live test (section 4). It has
 not been run yet because the provider keys are not configured.
 
+### Original-audio fallback (added after the first real runs)
+
+If Gemini cannot produce a sentence, every listener of that language gets the **lecturer's
+original audio** for it instead of silence. This covers rate limits and quota (the free tier
+allows 5 requests/min), overload (503), timeouts (8 s for translation, 15 s for TTS), a rejected
+key, bad responses and the session cost cap.
+
+- No retries for Gemini: for live speech, the original audio now beats a translation 10 s late.
+- A failing model is cooled down (`provider_cooldowns`) so the next sentences skip it without a
+  request: for the provider's retry time on 429 (60 s if none is given), 15 s on
+  overload/timeout, 5 min on a rejected key.
+- Only our own storage upload is retried.
+- `hub_poll` marks these segments `original: true`. The Hub keeps the flag, and the student page
+  shows "Original audio · translation unavailable" while it plays (firmware rebuilt, compiles).
+- `session_summary.segments_original_fallback` shows how much of a lecture was untranslated.
+- Workers now answer pg_net at once and work in the background (`EdgeRuntime.waitUntil`).
+  pg_net waits for each batch of requests, so a worker held open by a slow provider delayed
+  the next wake-ups by up to 21 s.
+
+Measured with the free-tier key (2026-11-12, `tools/ai-smoke.mjs`, 33 s clip, phones on af, af and st):
+all 5 sentences reached both languages as original audio, in order. The delay from a chunk's
+upload to its audio being ready was median 5.5–6 s, maximum 11 s (for a sentence that ends at
+a chunk boundary and waits for the next chunk).
+
 ### Phase 5 – Student delivery
 
 The page is unchanged apart from ADPCM decoding, the earphones notice and the never-replay

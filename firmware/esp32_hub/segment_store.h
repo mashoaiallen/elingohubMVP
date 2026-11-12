@@ -23,6 +23,7 @@ struct Segment {
   size_t length;
   uint16_t refs;
   bool evicted;
+  bool original;  // the lecturer's untranslated audio (translation unavailable for this part)
   char lang[8];
 };
 
@@ -31,7 +32,8 @@ class SegmentStore {
   SegmentStore();
 
   // Takes ownership of data (allocated with malloc/heap_caps_malloc).
-  bool put(const char *lang, int64_t id, uint32_t seq, uint32_t durationMs, uint8_t *data, size_t length);
+  bool put(const char *lang, int64_t id, uint32_t seq, uint32_t durationMs, uint8_t *data, size_t length,
+           bool original = false);
   Segment *acquire(const char *lang, uint32_t seq);
   void release(Segment *segment);
   // Fills out with segments newer than afterSeq; returns the number written.
