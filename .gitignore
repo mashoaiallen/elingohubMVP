@@ -1,0 +1,38 @@
+# --- Secrets (never commit) ---
+firmware/esp32_hub/secrets.h
+.env
+.env.*
+!.env.example
+supabase/.env
+supabase/.temp/
+supabase/.branches/
+tools/.hub-credentials*.json
+
+# --- Private lecture audio and runtime data ---
+uploads/
+logs/
+*.wav
+!tools/fixtures/*.wav
+
+# --- Build output ---
+.arduino_build/
+build/
+firmware/**/build/
+*.elf
+*.map
+*.o
+littlefs.bin
+
+# --- Python leftovers from the retired Flask prototype ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# --- Tooling / OS / editor junk ---
+node_modules/
+tempCodeRunnerFile*
+/python
+.DS_Store
+Thumbs.db
+.vscode/
