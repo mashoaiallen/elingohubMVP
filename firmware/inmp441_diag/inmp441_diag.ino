@@ -1,6 +1,15 @@
+// INMP441 diagnostic: records a short clip, prints stats and a base64 WAV over serial.
+// Defaults match the VERIFIED Hub wiring (SCK=6, WS=5, SD=4, 16 kHz, LEFT slot, >>14).
+// The old defaults (SCK=4, SD=6, 48 kHz) produced flat captures (RMS 0) on both slots.
 #include <Arduino.h>
+
+#if !defined(DIAG_USE_LCD)
+#define DIAG_USE_LCD 0  // the 16x2 LCD is no longer part of the Hub hardware
+#endif
+#if DIAG_USE_LCD
 #include <LiquidCrystal_I2C.h>
 #include <Wire.h>
+#endif
 #include <driver/i2s.h>
 #include <esp_heap_caps.h>
 #include <esp_intr_alloc.h>
@@ -12,7 +21,7 @@
 #include <cstring>
 
 #if !defined(DIAG_I2S_SCK)
-#define DIAG_I2S_SCK 4
+#define DIAG_I2S_SCK 6
 #endif
 
 #if !defined(DIAG_I2S_WS)
@@ -20,7 +29,7 @@
 #endif
 
 #if !defined(DIAG_I2S_SD)
-#define DIAG_I2S_SD 6
+#define DIAG_I2S_SD 4
 #endif
 
 #if !defined(DIAG_RED_LED)
@@ -56,7 +65,7 @@
 #endif
 
 #if !defined(DIAG_SAMPLE_RATE)
-#define DIAG_SAMPLE_RATE 48000
+#define DIAG_SAMPLE_RATE 16000
 #endif
 
 #if !defined(DIAG_CHUNK_MS)
@@ -91,7 +100,9 @@ constexpr const char *I2S_SLOT_NAME = "LEFT";
 
 int32_t rawBuffer[READ_SAMPLES];
 uint8_t *wavBuffer = nullptr;
+#if DIAG_USE_LCD
 LiquidCrystal_I2C lcd(DIAG_LCD_ADDRESS, DIAG_LCD_COLUMNS, DIAG_LCD_ROWS);
+#endif
 bool finished = false;
 bool lcdReady = false;
 
@@ -145,11 +156,15 @@ void showLcdLines(const String &line1, const String &line2) {
   if (!lcdReady) {
     return;
   }
-
+#if DIAG_USE_LCD
   lcd.setCursor(0, 0);
   lcd.print(fitLcdLine(line1));
   lcd.setCursor(0, 1);
   lcd.print(fitLcdLine(line2));
+#else
+  (void)line1;
+  (void)line2;
+#endif
 }
 
 void beginVisualStatus() {
@@ -157,11 +172,13 @@ void beginVisualStatus() {
   pinMode(DIAG_GREEN_LED, OUTPUT);
   setStatusLed(true, false);
 
+#if DIAG_USE_LCD
   Wire.begin(DIAG_LCD_SDA, DIAG_LCD_SCL);
   lcd.init();
   lcd.backlight();
   lcd.clear();
   lcdReady = true;
+#endif
   showLcdLines("INMP441 Diag", "Booting...");
 }
 

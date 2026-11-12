@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>eLingo Hub setup</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span><div><h1>Hub setup</h1><p class="sub">Owner only</p></div></div>
+    <a class="small" href="/">Student page</a>
+  </header>
+  <main>
+    <section class="card" id="closed">
+      <h2>Setup is closed</h2>
+      <p>Press and hold the Hub button for 5 seconds. The LED double-blinks blue while setup is open (10 minutes).</p>
+      <div class="row"><button class="secondary" id="recheck" type="button">Check again</button></div>
+    </section>
+
+    <section class="card hidden" id="login">
+      <h2>Enter setup PIN</h2>
+      <label for="pin">PIN</label>
+      <input id="pin" inputmode="numeric" autocomplete="off">
+      <div class="row"><button class="primary" id="login-btn" type="button">Unlock</button></div>
+    </section>
+
+    <section class="card hidden" id="panel">
+      <h2>Internet connection</h2>
+      <dl class="kv" id="upstream"></dl>
+      <label for="ssid">Network</label>
+      <select id="ssid"><option value="">Scan to list networks…</option></select>
+      <label for="ssid-manual">…or type the network name</label>
+      <input id="ssid-manual" autocomplete="off">
+      <label for="wifi-pass">Password</label>
+      <input id="wifi-pass" type="password" autocomplete="off">
+      <div class="row">
+        <button class="secondary" id="scan" type="button">Scan</button>
+        <button class="primary" id="save-wifi" type="button">Save &amp; connect</button>
+      </div>
+    </section>
+
+    <section class="card hidden" id="ap">
+      <h2>Student network password</h2>
+      <p class="small">Network name: eLingo-Hub. Leave empty for an open network, or use 8–63 characters.</p>
+      <label for="ap-pass">New password</label>
+      <input id="ap-pass" type="password" autocomplete="off">
+      <div class="row"><button class="primary" id="save-ap" type="button">Save</button></div>
+    </section>
+
+    <p id="message" class="message" role="status" aria-live="polite"></p>
+  </main>
+  <script>
+  (function () {
+    'use strict';
+    var $ = function (id) { return document.getElementById(id); };
+    var token = '';
+    try { token = sessionStorage.getItem('elingo.setupToken') || ''; } catch (e) {}
+    function msg(t, bad) { $('message').textContent = t || ''; $('message').className = 'message' + (bad ? ' bad' : ''); }
+    function show(id) { ['closed', 'login', 'panel', 'ap'].forEach(function (s) { $(s).classList.toggle('hidden', id.indexOf(s) < 0); }); }
+    function call(path, method, body) {
+      return fetch(path, { method: method || 'GET', cache: 'no-store',
+        headers: Object.assign({ 'X-Setup-Token': token }, body ? { 'Content-Type': 'application/json' } : {}),
+        body: body ? JSON.stringify(body) : undefined })
+        .then(function (r) { return r.json().then(function (d) { if (!r.ok) { var e = new Error(d.message || r.status); e.code = d.error; throw e; } return d; }); });
+    }
+    function refresh() {
+      call('/api/setup/status').then(function (s) {
+        if (!s.open) { show(['closed']); return; }
+        var kv = $('upstream'); kv.textContent = '';
+        [['Network', s.upstream.ssid || '(none)'], ['Connected', s.upstream.connected ? 'yes (' + s.upstream.rssi + ' dBm)' : 'no'],
+         ['Cloud', s.cloud.online ? 'online' : 'offline'], ['Setup closes in', Math.round(s.remainingS / 60) + ' min']]
+          .forEach(function (p) { var dt = document.createElement('dt'); dt.textContent = p[0]; var dd = document.createElement('dd'); dd.textContent = p[1]; kv.appendChild(dt); kv.appendChild(dd); });
+        show(token ? ['panel', 'ap'] : ['login']);
+      }).catch(function () { msg('Cannot reach the Hub.', true); });
+    }
+    $('recheck').onclick = refresh;
+    $('login-btn').onclick = function () {
+      call('/api/setup/login', 'POST', { pin: $('pin').value }).then(function (d) {
+        token = d.token; try { sessionStorage.setItem('elingo.setupToken', token); } catch (e) {}
+        msg(''); refresh();
+      }).catch(function (e) { msg(e.message, true); });
+    };
+    $('scan').onclick = function () {
+      msg('Scanning… (students may notice a short pause)');
+      call('/api/setup/scan').then(function (d) {
+        var sel = $('ssid'); sel.textContent = '';
+        d.networks.forEach(function (n) { var o = document.createElement('option'); o.value = n.ssid; o.textContent = n.ssid + '  (' + n.rssi + ' dBm' + (n.secure ? ', secured' : ', open') + ')'; sel.appendChild(o); });
+        msg(d.networks.length + ' networks found');
+      }).catch(function (e) { if (e.code === 'setup_login') { token = ''; refresh(); } msg(e.message, true); });
+    };
+    $('save-wifi').onclick = function () {
+      var ssid = $('ssid-manual').value.trim() || $('ssid').value;
+      call('/api/setup/wifi', 'POST', { ssid: ssid, password: $('wifi-pass').value })
+        .then(function (d) { msg(d.message); setTimeout(refresh, 8000); }).catch(function (e) { msg(e.message, true); });
+    };
+    $('save-ap').onclick = function () {
+      call('/api/setup/ap', 'POST', { password: $('ap-pass').value })
+        .then(function (d) { msg(d.message); }).catch(function (e) { msg(e.message, true); });
+    };
+    refresh();
+  })();
+  </script>
+</body>
+</html>

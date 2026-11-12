@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0f766e">
+  <title>eLingo Hub</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="bar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div>
+        <h1 id="hub-name">eLingo Hub</h1>
+        <p id="session-line" class="sub">Connecting to the Hub…</p>
+      </div>
+    </div>
+    <span id="conn-pill" class="pill pill-wait">Connecting</span>
+  </header>
+
+  <main>
+    <section id="welcome" class="card notice">
+      <h2>You are connected to the Hub</h2>
+      <p>This page comes from the eLingo Hub itself, so you do not need mobile data.</p>
+      <ol>
+        <li>Choose your language.</li>
+        <li>Tap <strong>Start listening</strong> and keep this page open.</li>
+      </ol>
+      <p class="small">If this opened in a small “Sign in” window, choose <em>Use this network as is</em>,
+        then open <strong>192.168.4.1</strong> in Chrome so audio keeps playing.</p>
+      <button id="dismiss-welcome" class="link" type="button">Got it</button>
+    </section>
+
+    <section class="card">
+      <h2 id="lang-heading">Language</h2>
+      <div id="languages" class="lang-grid" role="radiogroup" aria-labelledby="lang-heading"></div>
+      <p id="lang-empty" class="small">Waiting for the Hub's language list…</p>
+    </section>
+
+    <section class="card player">
+      <div class="now">
+        <div><span class="label">Listening to</span><strong id="now-lang">—</strong></div>
+        <div><span class="label">Status</span><strong id="play-state">Not started</strong></div>
+      </div>
+      <div class="meter" aria-hidden="true"><span id="buffer-bar"></span></div>
+      <div class="actions">
+        <button id="listen" class="primary" type="button" disabled>Start listening</button>
+        <button id="leave" class="secondary" type="button" disabled>Leave</button>
+      </div>
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <footer><span id="clients"></span></footer>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -3,68 +3,61 @@
 
 #include <Arduino.h>
 
-#include "api_manager.h"
 #include "audio_manager.h"
 #include "button_manager.h"
-#include "lcd_manager.h"
+#include "cloud_sync.h"
 #include "led_manager.h"
+#include "listener_registry.h"
+#include "local_server.h"
+#include "segment_store.h"
 #include "session_manager.h"
+#include "settings.h"
 #include "wifi_manager.h"
 
+// Hub control loop (Arduino loop task). Network work happens in CloudSync and LocalServer; this
+// class only reacts to the button, task results and timers, and drives the status LED.
+//
+//   BOOTING --> OFFLINE <--> READY --press--> STARTING --cloud ok--> IN_SESSION --press--> SESSION_ENDED
+//                  ^                              |  cloud failed          |  cloud ended it      | 5 s
+//                  +------------------------------+-----------------------+----------------------+
+//   Any state --> FATAL on a microphone/PSRAM fault.  Long press (5 s) toggles setup mode anywhere.
 class StateMachine {
  public:
-  StateMachine(
-      WifiManager &wifiManager,
-      ApiManager &apiManager,
-      LcdManager &lcdManager,
-      LedManager &ledManager,
-      ButtonManager &buttonManager,
-      AudioManager &audioManager,
-      SessionManager &sessionManager);
+  StateMachine(SettingsStore &settings, WifiManager &wifi, LedManager &led, ButtonManager &button,
+               AudioManager &audio, SessionManager &session, ListenerRegistry &listeners, SegmentStore &segments,
+               CloudSync &cloud, LocalServer &server);
 
-  void begin();
+  void begin(bool hardwareFault);
   void update();
+  const char *stateName() const;
+  void toggleSetupMode();
 
  private:
-  enum class HubState {
-    BOOTING,
-    CONNECTING_WIFI,
-    CHECKING_SERVER,
-    READY,
-    CREATING_SESSION,
-    JOINING,
-    RECORDING,
-    ENDING_SESSION,
-    ERROR_STATE
-  };
+  enum class HubState : uint8_t { BOOTING, OFFLINE, READY, STARTING, IN_SESSION, SESSION_ENDED, FATAL };
 
-  void transitionTo(HubState nextState);
-  void handleBooting(uint32_t now);
-  void handleConnectingWifi();
-  void handleCheckingServer(uint32_t now);
-  void handleErrorState(uint32_t now);
-  void handleReady(bool buttonPressed);
-  void handleCreatingSession();
-  void handleJoining(uint32_t now);
-  void handleRecording(uint32_t now, bool buttonPressed);
-  void handleEndingSession();
-  void tryUploadPendingChunk(uint32_t now);
-  void releasePendingChunk();
-  const char *stateName(HubState state) const;
+  void transitionTo(HubState next);
+  void handleButton(ButtonEvent event);
+  void beginCapture(uint32_t firstSeq);
+  void endSession(const char *reason);
+  void applySetupChanges(uint32_t now);
+  void refreshLed();
 
-  WifiManager &wifiManager_;
-  ApiManager &apiManager_;
-  LcdManager &lcdManager_;
-  LedManager &ledManager_;
-  ButtonManager &buttonManager_;
-  AudioManager &audioManager_;
-  SessionManager &sessionManager_;
+  SettingsStore &settings_;
+  WifiManager &wifi_;
+  LedManager &led_;
+  ButtonManager &button_;
+  AudioManager &audio_;
+  SessionManager &session_;
+  ListenerRegistry &listeners_;
+  SegmentStore &segments_;
+  CloudSync &cloud_;
+  LocalServer &server_;
 
   HubState state_;
   uint32_t stateEnteredMs_;
-  uint32_t lastHealthAttemptMs_;
-  uint32_t lastUploadAttemptMs_;
-  AudioChunk pendingChunk_;
+  uint32_t lastExpiryMs_;
+  uint32_t apRestartAtMs_;
+  bool hardwareFault_;
 };
 
 #endif

@@ -1,24 +1,3 @@
+// Intentionally empty: credentials moved to NVS (settings.cpp), seeded from secrets.h.
+// Kept so existing build scripts that list config.cpp keep working.
 #include "config.h"
-
-namespace Config {
-
-const char WIFI_SSID[] = "Allen";
-const char WIFI_PASSWORD[] = "allenmashoai";
-
-// Use the LAN IP address of the computer running Flask.
-const char API_BASE_URL[] = "http://10.198.75.239:5000";
-
-String endpoint(const char *path) {
-  String base(API_BASE_URL);
-  String suffix(path);
-
-  if (base.endsWith("/") && suffix.startsWith("/")) {
-    base.remove(base.length() - 1);
-  } else if (!base.endsWith("/") && !suffix.startsWith("/")) {
-    base += "/";
-  }
-
-  return base + suffix;
-}
-
-}  // namespace Config

@@ -1,31 +1,45 @@
-# Platform Notes
+# Platform notes
 
-## Assumptions
+## Networking (AP+STA on one radio)
 
-- The Flask backend is reachable from the ESP32 over the same WiFi network.
-- `API_BASE_URL` uses plain HTTP and a LAN IP address.
-- The LCD backpack address is `0x27`. Some modules use `0x3F`; change `LCD_I2C_ADDRESS` in `config.h` if the display stays blank.
-- The INMP441 is read as the left I2S channel. If your module is wired for the opposite channel and audio is silent, change `I2S_CHANNEL_FMT_ONLY_LEFT` in `audio_manager.cpp` to `I2S_CHANNEL_FMT_ONLY_RIGHT`.
-- Audio is captured as 48 kHz, mono, 16-bit PCM WAV.
+- The soft-AP and the upstream station share one 2.4 GHz radio. The AP always runs on the
+  upstream network's channel; when that changes the ESP32 moves the AP and sends a Channel
+  Switch Announcement. Phones that ignore CSA reconnect — test with your phones.
+- Upstream retries back off from 5 s to 60 s so a missing hotspot does not keep disturbing
+  students. Wi-Fi scans (setup page only) also briefly pause the AP.
+- The AP does not route to the internet; phones only need the Hub. Android may show "no
+  internet"; the page still works because 192.168.4.1 is on the local subnet.
+- Soft-AP station limit is 10 with this core (CONFIG_ESP_WIFI_ESPNOW_MAX_ENCRYPT_NUM=7 →
+  17 − 7). `max_open_sockets` for the web server is 9 of LWIP's 16 sockets, leaving room for
+  TLS, DNS and SNTP; idle sockets are recycled (LRU purge).
+- Captive portal: a DNS server answers every name with 192.168.4.1 and unknown URLs redirect
+  to the student page, so phones' connectivity checks open it automatically.
 
-## Audio Buffering
+## Cloud connection
 
-The firmware stores each five-second WAV chunk in RAM/PSRAM and frees that buffer after a successful upload. This matches the requested dependency list without adding SD, SPIFFS, or LittleFS.
+- HTTPS with the Mozilla CA bundle compiled into the core (`_binary_x509_crt_bundle_start`).
+- One keep-alive TLS connection, reused for every request from the cloud task.
+- The Hub signs in as its own Supabase Auth user; refresh tokens rotate (the newest is kept
+  in RAM; after a reboot it signs in with the stored password).
 
-If an upload fails, the completed chunk is kept in memory and retried every five seconds. Because this is a single-buffer MVP implementation, capture pauses at a chunk boundary while a failed chunk is waiting to upload. A production build should add a persistent queue or double-buffered upload worker if lossless continuous capture is required during poor network conditions.
+## Memory (16 MB PSRAM)
 
-## Backend Compatibility
+| Buffer | Size |
+| --- | --- |
+| Capture queue: 12 × 160 KB chunks | ~1.9 MB (~60 s of audio while offline) |
+| Segment store (all languages) | ≤ 6 MB, ≤ 12 segments per language |
+| Download buffers / TLS records | allocated in PSRAM (> 4 KB allocations) |
 
-The firmware posts multipart form data with these fields:
+Task stacks are in internal RAM: cloud 16 KB, audio 6 KB, httpd 8 KB. Measure with the
+`status` serial command (free heap, minimum heap, free PSRAM) during long sessions.
 
-- `sessionId`
-- `chunkNumber`
-- `audioFile`
+## Legacy I2S driver
 
-The file field is sent as `audio/wav` with filenames like `chunk0001.wav`. No backend changes are required for the current Flask API.
+The verified microphone setup uses `driver/i2s.h`, which ESP-IDF 5 marks deprecated (compile
+warnings are expected). It is kept on purpose until a hardware-verified port to `i2s_std` exists.
 
-## Arduino Core Notes
+## LittleFS
 
-This project uses the ESP32 Arduino core legacy `driver/i2s` API because it is stable and widely supported in Arduino IDE projects. ESP32 Arduino core 3.x may emit deprecation warnings for the legacy I2S driver, but it remains available for compatibility.
-
-Enable PSRAM for the Waveshare ESP32-S3-DEV-KIT-N32R16V. Without PSRAM, large multipart uploads may fail because a five-second WAV chunk and HTTP request body need to be in memory at the same time.
+The student page is in `data/` and flashed as a LittleFS image to the `spiffs` partition at
+0x910000 (size 0x16E0000) by `tools/flash-web.mjs`. Without it the Hub serves a short fallback
+page explaining how to flash it.

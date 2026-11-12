@@ -2,350 +2,216 @@
 
 #include "config.h"
 
-StateMachine::StateMachine(
-    WifiManager &wifiManager,
-    ApiManager &apiManager,
-    LcdManager &lcdManager,
-    LedManager &ledManager,
-    ButtonManager &buttonManager,
-    AudioManager &audioManager,
-    SessionManager &sessionManager)
-    : wifiManager_(wifiManager),
-      apiManager_(apiManager),
-      lcdManager_(lcdManager),
-      ledManager_(ledManager),
-      buttonManager_(buttonManager),
-      audioManager_(audioManager),
-      sessionManager_(sessionManager),
+StateMachine::StateMachine(SettingsStore &settings, WifiManager &wifi, LedManager &led, ButtonManager &button,
+                           AudioManager &audio, SessionManager &session, ListenerRegistry &listeners,
+                           SegmentStore &segments, CloudSync &cloud, LocalServer &server)
+    : settings_(settings),
+      wifi_(wifi),
+      led_(led),
+      button_(button),
+      audio_(audio),
+      session_(session),
+      listeners_(listeners),
+      segments_(segments),
+      cloud_(cloud),
+      server_(server),
       state_(HubState::BOOTING),
       stateEnteredMs_(0),
-      lastHealthAttemptMs_(0),
-      lastUploadAttemptMs_(0),
-      pendingChunk_() {}
+      lastExpiryMs_(0),
+      apRestartAtMs_(0),
+      hardwareFault_(false) {}
 
-void StateMachine::begin() {
-  ledManager_.begin();
-  lcdManager_.begin();
-  buttonManager_.begin();
-  apiManager_.begin();
-
-  wifiManager_.begin(Config::WIFI_SSID, Config::WIFI_PASSWORD);
-
-  if (!audioManager_.begin()) {
-    Serial.print("Audio init warning: ");
-    Serial.println(audioManager_.lastError());
-  }
-
+void StateMachine::begin(bool hardwareFault) {
+  hardwareFault_ = hardwareFault;
   transitionTo(HubState::BOOTING);
+}
+
+const char *StateMachine::stateName() const {
+  switch (state_) {
+    case HubState::BOOTING: return "BOOTING";
+    case HubState::OFFLINE: return "OFFLINE";
+    case HubState::READY: return "READY";
+    case HubState::STARTING: return "STARTING";
+    case HubState::IN_SESSION: return "IN_SESSION";
+    case HubState::SESSION_ENDED: return "SESSION_ENDED";
+    case HubState::FATAL: return "FATAL";
+  }
+  return "?";
+}
+
+void StateMachine::transitionTo(HubState next) {
+  state_ = next;
+  stateEnteredMs_ = millis();
+  Serial.printf("[Hub] State: %s\n", stateName());
+  refreshLed();
+}
+
+void StateMachine::toggleSetupMode() {
+  if (server_.setupActive()) {
+    server_.disableSetup();
+  } else {
+    server_.enableSetup(Config::SETUP_MODE_MS);
+  }
+}
+
+void StateMachine::beginCapture(uint32_t firstSeq) {
+  if (!audio_.startCapture(firstSeq)) {
+    Serial.printf("[Hub] Cannot start capture: %s\n", audio_.lastError());
+    cloud_.requestEnd();
+    transitionTo(HubState::FATAL);
+    return;
+  }
+  transitionTo(HubState::IN_SESSION);
+}
+
+void StateMachine::endSession(const char *reason) {
+  Serial.printf("[Hub] Ending session (%s)\n", reason);
+  audio_.stopCapture();  // flushes the last partial chunk into the upload queue
+  cloud_.requestEnd();   // uploads what is left (<= 10 s), then ends the session in the cloud
+}
+
+void StateMachine::handleButton(ButtonEvent event) {
+  if (event == ButtonEvent::LONG_PRESS) {
+    toggleSetupMode();
+    return;
+  }
+  if (event != ButtonEvent::SHORT_PRESS) {
+    return;
+  }
+  switch (state_) {
+    case HubState::READY:
+      Serial.println("[Hub] Button: start session");
+      cloud_.requestStart();
+      transitionTo(HubState::STARTING);
+      break;
+    case HubState::IN_SESSION:
+      Serial.println("[Hub] Button: end session");
+      endSession("button");
+      transitionTo(HubState::SESSION_ENDED);
+      break;
+    case HubState::OFFLINE:
+      Serial.println("[Hub] Button ignored: no cloud connection (red blink = offline)");
+      break;
+    default:
+      Serial.printf("[Hub] Button ignored in %s\n", stateName());
+      break;
+  }
+}
+
+void StateMachine::applySetupChanges(uint32_t now) {
+  if (server_.takeWifiChanged()) {
+    HubSettings s = settings_.snapshot();
+    wifi_.setStaCredentials(s.staSsid, s.staPassword);
+  }
+  if (server_.takeApChanged()) {
+    apRestartAtMs_ = now + 3000;  // let the HTTP response reach the phone first
+  }
+  if (apRestartAtMs_ != 0 && static_cast<int32_t>(now - apRestartAtMs_) >= 0) {
+    apRestartAtMs_ = 0;
+    wifi_.restartAp(settings_.snapshot().apPassword);
+  }
 }
 
 void StateMachine::update() {
   uint32_t now = millis();
+  handleButton(button_.update(now));
+  server_.update(now);
+  applySetupChanges(now);
 
-  buttonManager_.update();
-  wifiManager_.update();
-  bool buttonPressed = buttonManager_.consumePress();
+  if (now - lastExpiryMs_ >= 1000) {
+    lastExpiryMs_ = now;
+    listeners_.expire(now);
+  }
 
+  uint32_t resumeSeq = 0;
   switch (state_) {
     case HubState::BOOTING:
-      handleBooting(now);
+      if (now - stateEnteredMs_ >= Config::BOOT_SWEEP_MS) {
+        transitionTo(hardwareFault_ ? HubState::FATAL : HubState::OFFLINE);
+      }
       break;
-    case HubState::CONNECTING_WIFI:
-      handleConnectingWifi();
-      break;
-    case HubState::CHECKING_SERVER:
-      handleCheckingServer(now);
-      break;
-    case HubState::ERROR_STATE:
-      handleErrorState(now);
-      break;
+
+    case HubState::OFFLINE:
     case HubState::READY:
-      handleReady(buttonPressed);
+      if (cloud_.takeResume(&resumeSeq)) {
+        Serial.println("[Hub] Resuming the session that was running before the restart");
+        beginCapture(resumeSeq);
+      } else if (state_ == HubState::OFFLINE && cloud_.online()) {
+        transitionTo(HubState::READY);
+      } else if (state_ == HubState::READY && !cloud_.online()) {
+        transitionTo(HubState::OFFLINE);
+      }
       break;
-    case HubState::CREATING_SESSION:
-      handleCreatingSession();
+
+    case HubState::STARTING: {
+      StartState start = cloud_.startState();
+      if (start == StartState::STARTED) {
+        cloud_.acknowledgeStart();
+        beginCapture(cloud_.startFirstSeq());
+      } else if (start == StartState::FAILED || now - stateEnteredMs_ > Config::SESSION_START_TIMEOUT_MS) {
+        cloud_.acknowledgeStart();
+        Serial.println("[Hub] Session start failed");
+        transitionTo(cloud_.online() ? HubState::READY : HubState::OFFLINE);
+      }
       break;
-    case HubState::JOINING:
-      handleJoining(now);
+    }
+
+    case HubState::IN_SESSION:
+      if (audio_.hardwareFault()) {
+        Serial.printf("[Hub] Microphone fault: %s\n", audio_.lastError());
+        endSession("hardware fault");
+        transitionTo(HubState::FATAL);
+      } else if (cloud_.takeRemoteEnd()) {
+        endSession("ended by cloud");
+        transitionTo(HubState::SESSION_ENDED);
+      }
       break;
-    case HubState::RECORDING:
-      handleRecording(now, buttonPressed);
+
+    case HubState::SESSION_ENDED:
+      if (now - stateEnteredMs_ >= Config::SESSION_END_RED_MS) {
+        transitionTo(cloud_.online() ? HubState::READY : HubState::OFFLINE);
+      }
       break;
-    case HubState::ENDING_SESSION:
-      handleEndingSession();
+
+    case HubState::FATAL:
       break;
   }
+
+  refreshLed();
+  led_.update(now);
 }
 
-void StateMachine::transitionTo(HubState nextState) {
-  state_ = nextState;
-  stateEnteredMs_ = millis();
-
-  Serial.print("State: ");
-  Serial.println(stateName(state_));
-
+void StateMachine::refreshLed() {
+  LedPattern pattern = LedPattern::OFF;
+  HubSnapshot snap = session_.snapshot();
   switch (state_) {
     case HubState::BOOTING:
-      ledManager_.setBooting();
-      lcdManager_.showBooting();
+      pattern = LedPattern::BOOT_SWEEP;
       break;
-    case HubState::CONNECTING_WIFI:
-      ledManager_.setBooting();
-      lcdManager_.showConnecting();
+    case HubState::FATAL:
+      pattern = LedPattern::FATAL;
       break;
-    case HubState::CHECKING_SERVER:
-      ledManager_.setBooting();
-      lcdManager_.showConnecting();
-      lastHealthAttemptMs_ = 0;
+    case HubState::SESSION_ENDED:
+      pattern = LedPattern::SESSION_ENDED;  // red for 5 s, then off
       break;
-    case HubState::ERROR_STATE:
-      ledManager_.setError();
-      lcdManager_.showServerOffline();
+    case HubState::STARTING:
+      pattern = LedPattern::SESSION_WAITING;  // blue as soon as the button is pressed
+      break;
+    case HubState::IN_SESSION: {
+      bool degraded = snap.degraded || !cloud_.online();
+      if (snap.translating) {
+        pattern = degraded ? LedPattern::DEGRADED_GREEN : LedPattern::SESSION_TRANSLATING;
+      } else {
+        pattern = degraded ? LedPattern::DEGRADED_BLUE : LedPattern::SESSION_WAITING;
+      }
+      break;
+    }
+    case HubState::OFFLINE:
+      pattern = server_.setupActive() ? LedPattern::SETUP : LedPattern::OFFLINE;
       break;
     case HubState::READY:
-      releasePendingChunk();
-      audioManager_.stop();
-      sessionManager_.reset();
-      ledManager_.setReady();
-      lcdManager_.showReady();
-      break;
-    case HubState::CREATING_SESSION:
-      ledManager_.setReady();
-      lcdManager_.showMessage("Starting", "Session...");
-      break;
-    case HubState::JOINING:
-      ledManager_.setReady();
-      lcdManager_.showJoin(sessionManager_.sessionId());
-      break;
-    case HubState::RECORDING:
-      ledManager_.setRecording();
-      lcdManager_.showRecording(sessionManager_.sessionId());
-      lastUploadAttemptMs_ = 0;
-      break;
-    case HubState::ENDING_SESSION:
-      ledManager_.setBooting();
-      lcdManager_.showEnding();
+      pattern = server_.setupActive() ? LedPattern::SETUP : LedPattern::OFF;
       break;
   }
-}
-
-void StateMachine::handleBooting(uint32_t now) {
-  if (now - stateEnteredMs_ >= Config::BOOT_SCREEN_MS) {
-    transitionTo(HubState::CONNECTING_WIFI);
-  }
-}
-
-void StateMachine::handleConnectingWifi() {
-  if (wifiManager_.isConnected()) {
-    Serial.print("WiFi connected. IP: ");
-    Serial.println(wifiManager_.localIp());
-    transitionTo(HubState::CHECKING_SERVER);
-  }
-}
-
-void StateMachine::handleCheckingServer(uint32_t now) {
-  if (!wifiManager_.isConnected()) {
-    transitionTo(HubState::CONNECTING_WIFI);
-    return;
-  }
-
-  if (lastHealthAttemptMs_ == 0 ||
-      now - lastHealthAttemptMs_ >= Config::HEALTH_RETRY_INTERVAL_MS) {
-    lastHealthAttemptMs_ = now;
-    ApiResult result = apiManager_.checkHealth();
-    if (result.success) {
-      transitionTo(HubState::READY);
-    } else {
-      Serial.print("Backend health failed: ");
-      Serial.println(result.error);
-      transitionTo(HubState::ERROR_STATE);
-    }
-  }
-}
-
-void StateMachine::handleErrorState(uint32_t now) {
-  if (!wifiManager_.isConnected()) {
-    transitionTo(HubState::CONNECTING_WIFI);
-    return;
-  }
-
-  if (now - lastHealthAttemptMs_ >= Config::HEALTH_RETRY_INTERVAL_MS) {
-    lastHealthAttemptMs_ = now;
-    ApiResult result = apiManager_.checkHealth();
-    if (result.success) {
-      transitionTo(HubState::READY);
-    } else {
-      Serial.print("Backend still unavailable: ");
-      Serial.println(result.error);
-      lcdManager_.showServerOffline();
-    }
-  }
-}
-
-void StateMachine::handleReady(bool buttonPressed) {
-  if (!wifiManager_.isConnected()) {
-    transitionTo(HubState::CONNECTING_WIFI);
-    return;
-  }
-
-  if (buttonPressed) {
-    transitionTo(HubState::CREATING_SESSION);
-  }
-}
-
-void StateMachine::handleCreatingSession() {
-  if (!wifiManager_.isConnected()) {
-    transitionTo(HubState::CONNECTING_WIFI);
-    return;
-  }
-
-  String sessionId;
-  ApiResult result = apiManager_.startSession(sessionId);
-  if (!result.success) {
-    Serial.print("Session creation failed: ");
-    Serial.println(result.error);
-    transitionTo(HubState::ERROR_STATE);
-    return;
-  }
-
-  sessionManager_.beginSession(sessionId);
-  transitionTo(HubState::JOINING);
-}
-
-void StateMachine::handleJoining(uint32_t now) {
-  if (!sessionManager_.hasActiveSession()) {
-    transitionTo(HubState::READY);
-    return;
-  }
-
-  if (now - stateEnteredMs_ < Config::JOIN_SCREEN_MS) {
-    return;
-  }
-
-  if (!audioManager_.start()) {
-    Serial.print("Unable to start audio capture: ");
-    Serial.println(audioManager_.lastError());
-
-    if (wifiManager_.isConnected()) {
-      apiManager_.endSession(sessionManager_.sessionId());
-    }
-    transitionTo(HubState::READY);
-    return;
-  }
-
-  transitionTo(HubState::RECORDING);
-}
-
-void StateMachine::handleRecording(uint32_t now, bool buttonPressed) {
-  if (buttonPressed) {
-    audioManager_.stop();
-    releasePendingChunk();
-    transitionTo(HubState::ENDING_SESSION);
-    return;
-  }
-
-  if (!sessionManager_.hasActiveSession()) {
-    transitionTo(HubState::READY);
-    return;
-  }
-
-  if (pendingChunk_.valid()) {
-    tryUploadPendingChunk(now);
-    return;
-  }
-
-  if (audioManager_.update()) {
-    pendingChunk_ = audioManager_.takeChunk();
-    tryUploadPendingChunk(now);
-  }
-}
-
-void StateMachine::handleEndingSession() {
-  if (sessionManager_.hasActiveSession() && wifiManager_.isConnected()) {
-    ApiResult result = apiManager_.endSession(sessionManager_.sessionId());
-    if (!result.success) {
-      Serial.print("Session end request failed: ");
-      Serial.println(result.error);
-      Serial.println("Session end request failed locally; resetting device state anyway");
-    }
-  } else if (sessionManager_.hasActiveSession()) {
-    Serial.println("WiFi offline while ending session; resetting local state");
-  }
-
-  transitionTo(HubState::READY);
-}
-
-void StateMachine::tryUploadPendingChunk(uint32_t now) {
-  if (!pendingChunk_.valid()) {
-    return;
-  }
-
-  if (lastUploadAttemptMs_ != 0 &&
-      now - lastUploadAttemptMs_ < Config::UPLOAD_RETRY_INTERVAL_MS) {
-    return;
-  }
-
-  if (!wifiManager_.isConnected()) {
-    lastUploadAttemptMs_ = now;
-    Serial.println("WiFi unavailable; holding chunk for retry");
-    return;
-  }
-
-  ApiResult result = apiManager_.uploadAudioChunk(
-      sessionManager_.sessionId(),
-      sessionManager_.chunkNumber(),
-      pendingChunk_.data,
-      pendingChunk_.length);
-
-  if (!result.success) {
-    lastUploadAttemptMs_ = millis();
-    Serial.print("Upload failed for chunk ");
-    Serial.print(sessionManager_.chunkNumber());
-    Serial.print(": ");
-    Serial.println(result.error);
-    Serial.println("Retrying later");
-    return;
-  }
-
-  lastUploadAttemptMs_ = 0;
-  audioManager_.releaseChunk(pendingChunk_);
-  sessionManager_.advanceChunk();
-  lcdManager_.showRecording(sessionManager_.sessionId());
-
-  if (!audioManager_.start()) {
-    Serial.print("Unable to restart audio capture: ");
-    Serial.println(audioManager_.lastError());
-    transitionTo(HubState::ENDING_SESSION);
-  }
-}
-
-void StateMachine::releasePendingChunk() {
-  if (pendingChunk_.valid()) {
-    audioManager_.releaseChunk(pendingChunk_);
-  }
-}
-
-const char *StateMachine::stateName(HubState state) const {
-  switch (state) {
-    case HubState::BOOTING:
-      return "BOOTING";
-    case HubState::CONNECTING_WIFI:
-      return "CONNECTING_WIFI";
-    case HubState::CHECKING_SERVER:
-      return "CHECKING_SERVER";
-    case HubState::READY:
-      return "READY";
-    case HubState::CREATING_SESSION:
-      return "CREATING_SESSION";
-    case HubState::JOINING:
-      return "JOINING";
-    case HubState::RECORDING:
-      return "RECORDING";
-    case HubState::ENDING_SESSION:
-      return "ENDING_SESSION";
-    case HubState::ERROR_STATE:
-      return "ERROR_STATE";
-    default:
-      return "unknown";
-  }
+  led_.setPattern(pattern);
 }
