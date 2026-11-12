@@ -6,9 +6,10 @@
 //   * A failed job is left on the queue and reappears after the visibility timeout; after
 //     MAX_ATTEMPTS it is marked failed and archived (dead letter), with a processing_event row.
 //
-// Milestone 1 runs in "loopback" mode: the source chunk is copied (server-side, Storage API) to
-// every active language. That exercises the full data path - demand rules, storage, polling,
-// download and playback - with zero AI cost. Milestone 2 adds the "ai" mode.
+// "loopback" mode (Milestone 1, and the fallback while provider keys are not set): the source
+// chunk is copied (server-side, Storage API) to every active language. That exercises the full
+// data path - demand rules, storage, polling, download and playback - with zero AI cost.
+// The "ai" mode lives in ai_pipeline.ts.
 
 export type PipelineMode = "loopback" | "ai";
 
@@ -138,6 +139,11 @@ async function loopbackSegment(db: Db, chunk: ChunkInfo, lang: string): Promise<
 }
 
 export async function processJob(db: Db, job: Job, mode: PipelineMode): Promise<JobResult> {
+  if (job.chunk_id === null || job.chunk_id === undefined) {
+    // Not a chunk (e.g. the AI stage's end-of-session flush message): nothing to do in loopback.
+    await db.rpc("worker_queue_archive", { p_queue: "chunk_jobs", p_msg_id: job.msg_id });
+    return { chunkId: 0, status: "already_final" };
+  }
   try {
     const ctx = await call<ChunkContext | null>(db, "worker_begin_chunk", { p_chunk_id: job.chunk_id });
     if (!ctx) {
@@ -165,7 +171,7 @@ export async function processJob(db: Db, job: Job, mode: PipelineMode): Promise<
     if (mode === "loopback") {
       await Promise.all(pending.map((lang) => loopbackSegment(db, chunk, lang)));
     } else {
-      throw new Error("PIPELINE_MODE=ai is not available until Milestone 2");
+      throw new Error("PIPELINE_MODE=ai is handled by ai_pipeline.ts, not processJob");
     }
 
     await finish(db, job, "done");

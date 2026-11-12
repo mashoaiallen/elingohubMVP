@@ -2,11 +2,15 @@
 // Simulated Hub: drives the real Supabase project with exactly the requests the ESP32 makes,
 // to verify the cloud data path without hardware (Milestone 1, loopback pipeline).
 //
-//   node tools/sim-hub.mjs --creds tools/.hub-credentials-<slug>.json
+//   node tools/sim-hub.mjs --creds tools/.hub-credentials-<slug>.json [--pcm]
+//
+// Chunks are uploaded as IMA ADPCM like firmware >= 0.3.0 (--pcm: 16-bit PCM like 0.2.x).
 //
 // It uses synthetic test tones, never lecture audio. Prints PASS/FAIL per check and timings.
 import { readFileSync } from "node:fs";
 import { HubClient, http, loadEnv, makeWav, parseArgs, sleep } from "./lib.mjs";
+// Node >= 22.18 strips TypeScript types: reuse the cloud's encoder (byte-identical to the Hub's).
+import { decodeWav, encodeAdpcmWav } from "../supabase/functions/_shared/audio.ts";
 
 const args = parseArgs(process.argv.slice(2));
 if (typeof args.creds !== "string") {
@@ -26,7 +30,7 @@ const pad = (n) => String(n).padStart(6, "0");
 const timings = [];
 
 async function sendChunk(sessionId, hubId, seq, freq) {
-  const wav = makeWav(5000, freq);
+  const wav = args.pcm ? makeWav(5000, freq) : encodeAdpcmWav(decodeWav(makeWav(5000, freq)));
   const t0 = performance.now();
   await hub.upload("source-audio", `${hubId}/${sessionId}/${pad(seq)}.wav`, wav);
   const tUp = performance.now();

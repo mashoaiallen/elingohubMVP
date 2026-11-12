@@ -428,3 +428,6 @@ verify_jwt = false
 
 [functions.cleanup]
 verify_jwt = false
+
+[functions.process-translation]
+verify_jwt = false
