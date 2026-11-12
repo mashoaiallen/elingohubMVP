@@ -16,7 +16,7 @@ Board: Waveshare ESP32-S3-DEV-KIT-N32R16V (32 MB octal flash, 16 MB octal PSRAM)
 | RGB LED module | G | 12 | same pin as the original green LED |
 | RGB LED module | B | **13** | **new wire** |
 | RGB LED module | common (–, GND) | GND | the long leg on a bare RGB LED |
-| Push button | – | **9** | other side to GND (internal pull-up). Was GPIO10 up to firmware 0.3.0-m2; wire it straight to the pin, not through a breadboard rail |
+| Push button | – | **9** | other side to **3.3 V** (never 5 V); internal pull-down, pressed = HIGH (firmware ≥ 0.3.2; `BUTTON_ACTIVE_HIGH` in `pins.h`). Was GPIO10 to GND up to 0.3.0-m2 |
 
 The LED is driven **active-HIGH** (GPIO HIGH = colour on). Each colour needs its own series
 resistor. Many modules already have them; look for three small resistors on the module's

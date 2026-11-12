@@ -87,7 +87,9 @@ void handleCommand(String line) {
                   digitalRead(Pins::LED_RED), Pins::LED_GREEN, digitalRead(Pins::LED_GREEN), Pins::LED_BLUE,
                   digitalRead(Pins::LED_BLUE));
   } else if (line == "button") {
-    Serial.printf("Button GPIO%u reads %s\n", Pins::BUTTON, digitalRead(Pins::BUTTON) == LOW ? "LOW (pressed)" : "HIGH (released)");
+    int level = digitalRead(Pins::BUTTON);
+    Serial.printf("Button GPIO%u reads %s (%s)\n", Pins::BUTTON, level == HIGH ? "HIGH" : "LOW",
+                  level == Pins::BUTTON_PRESSED_LEVEL ? "pressed" : "released");
   } else if (line == "reboot") {
     ESP.restart();
   } else if (line == "factory-reset") {
