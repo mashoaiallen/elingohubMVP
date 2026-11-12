@@ -7,7 +7,7 @@
 // from the gitignored secrets.h on first boot.
 namespace Config {
 
-constexpr const char *FIRMWARE_VERSION = "0.2.0-m1";
+constexpr const char *FIRMWARE_VERSION = "0.3.0-m2";
 
 // ---- Student network (soft-AP) ------------------------------------------------------------
 constexpr const char *AP_SSID = "eLingo-Hub";
@@ -50,6 +50,16 @@ constexpr size_t MAX_SEGMENT_BYTES = 1024 * 1024;
 constexpr size_t SEGMENT_MEMORY_BUDGET = 6 * 1024 * 1024;
 constexpr uint8_t CAPTURE_QUEUE_DEPTH = 12;                 // ~60 s of source audio while offline
 
+// ---- Live delivery: never play stale audio ----------------------------------------------------
+// A segment is not downloaded when its source chunk is this many chunks older than the chunk
+// being recorded now (8 x 5 s = 40 s behind live). Covers resume after a reboot, a language that
+// had no listeners for a while, and upload backlogs.
+constexpr uint32_t MAX_SEGMENT_LAG_CHUNKS = 8;
+// Segments held on the Hub longer than this are no longer offered to phones.
+constexpr uint32_t SEGMENT_MAX_AGE_MS = 60000;
+// Consecutive chunks of digital silence (every sample 0) before the microphone is reported dead.
+constexpr uint32_t MIC_DEAD_WARN_CHUNKS = 2;
+
 // ---- Audio (verified configuration - do not change without hardware evidence) -------------
 constexpr uint32_t AUDIO_CHUNK_MS = 5000;
 constexpr uint32_t AUDIO_SAMPLE_RATE = 16000;
@@ -66,6 +76,9 @@ constexpr bool AUDIO_AUTO_TRY_BOTH_I2S_SLOTS = true;
 constexpr uint32_t AUDIO_STARTUP_DISCARD_MS = 300;
 // On session end a partial chunk is kept if it holds at least this much audio.
 constexpr uint32_t AUDIO_MIN_TAIL_MS = 1000;
+// Upload chunks as IMA ADPCM (40 KB per 5 s instead of 160 KB). Capture itself is unchanged:
+// still 16 kHz, 32-bit slots, >> 14, LEFT slot; only the transport encoding differs.
+constexpr bool AUDIO_UPLOAD_ADPCM = true;
 
 }  // namespace Config
 

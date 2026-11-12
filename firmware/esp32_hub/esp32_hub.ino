@@ -10,6 +10,7 @@
 #include "led_manager.h"
 #include "listener_registry.h"
 #include "local_server.h"
+#include "pins.h"
 #include "segment_store.h"
 #include "session_manager.h"
 #include "settings.h"
@@ -39,6 +40,8 @@ void printHelp() {
   Serial.println(F("  set <key> <value>       keys: sta_ssid sta_pass ap_pass setup_pin supabase_url"));
   Serial.println(F("                          publishable_key hub_email hub_password"));
   Serial.println(F("  setup                   toggle the setup page (same as a 5 s button press)"));
+  Serial.println(F("  led red|green|blue|all|off|auto   wiring check (auto = normal behaviour)"));
+  Serial.println(F("  button                  read the button pin now"));
   Serial.println(F("  factory-reset           clear NVS and re-seed from secrets.h"));
   Serial.println(F("  reboot"));
 }
@@ -72,6 +75,19 @@ void handleCommand(String line) {
     settings.printMasked(Serial);
   } else if (line == "setup") {
     machine.toggleSetupMode();
+  } else if (line.startsWith("led ")) {
+    String c = line.substring(4);
+    int8_t mask = c == "red" ? 1 : c == "green" ? 2 : c == "blue" ? 4 : c == "all" ? 7 : c == "off" ? 0 : -1;
+    if (mask < 0 && c != "auto") {
+      Serial.println("led red|green|blue|all|off|auto");
+      return;
+    }
+    led.setOverride(mask);
+    Serial.printf("LED %s: GPIO%u(R)=%d GPIO%u(G)=%d GPIO%u(B)=%d\n", c.c_str(), Pins::LED_RED,
+                  digitalRead(Pins::LED_RED), Pins::LED_GREEN, digitalRead(Pins::LED_GREEN), Pins::LED_BLUE,
+                  digitalRead(Pins::LED_BLUE));
+  } else if (line == "button") {
+    Serial.printf("Button GPIO%u reads %s\n", Pins::BUTTON, digitalRead(Pins::BUTTON) == LOW ? "LOW (pressed)" : "HIGH (released)");
   } else if (line == "reboot") {
     ESP.restart();
   } else if (line == "factory-reset") {
@@ -117,11 +133,11 @@ void pollConsole() {
 }  // namespace
 
 void setup() {
+  led.begin();  // first, so all three LED channels are driven off from the earliest moment
   Serial.begin(115200);
   delay(200);
   Serial.printf("\neLingo Hub firmware %s\n", Config::FIRMWARE_VERSION);
 
-  led.begin();
   button.begin();
   settings.begin();
 

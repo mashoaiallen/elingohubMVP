@@ -7,8 +7,10 @@
 // GPIO 47/48 run at 1.8 V on this module - do not use them.
 namespace Pins {
 
-// Status LED: external common-cathode RGB (or three LEDs sharing ground), each colour through
-// its own resistor. HIGH = on.
+// Status LED: external common-cathode RGB module (common pin to GND), each colour through its
+// own resistor. Active-HIGH: HIGH = on. GPIO 11-13 have no onboard connection on this board (its
+// own WS2812 LED is on GPIO38), are not strapping pins and are 3.3 V I/O. Red and green are the
+// pins the original firmware already used.
 constexpr uint8_t LED_RED = 11;
 constexpr uint8_t LED_GREEN = 12;
 constexpr uint8_t LED_BLUE = 13;

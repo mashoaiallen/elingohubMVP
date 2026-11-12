@@ -1,6 +1,7 @@
 #include "cloud_sync.h"
 
 #include <esp_random.h>
+#include <esp_system.h>
 #include <time.h>
 
 #include <algorithm>
@@ -8,6 +9,9 @@
 #include "config.h"
 
 namespace {
+
+// Smallest WAV that holds audio: a 60-byte ADPCM header (44 for PCM) plus at least one block.
+constexpr size_t kMinPlayableBytes = 64;
 
 String randomHex(uint8_t bytes) {
   static const char *HEX_DIGITS = "0123456789abcdef";
@@ -29,6 +33,24 @@ String isoTime(int64_t epochMs) {
   snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03dZ", tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday,
            tmv.tm_hour, tmv.tm_min, tmv.tm_sec, static_cast<int>(epochMs % 1000));
   return String(buf);
+}
+
+const char *resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "power-on";
+    case ESP_RST_EXT: return "external pin";
+    case ESP_RST_SW: return "software";
+    case ESP_RST_PANIC: return "panic (crash)";
+    case ESP_RST_INT_WDT: return "interrupt watchdog";
+    case ESP_RST_TASK_WDT: return "task watchdog";
+    case ESP_RST_WDT: return "other watchdog";
+    case ESP_RST_DEEPSLEEP: return "deep sleep";
+    case ESP_RST_BROWNOUT: return "brownout (power dip)";
+    case ESP_RST_SDIO: return "sdio";
+    case ESP_RST_USB: return "usb";
+    case ESP_RST_JTAG: return "jtag";
+    default: return "unknown";
+  }
 }
 
 String seqName(uint32_t seq) {
@@ -70,7 +92,13 @@ CloudSync::CloudSync(SettingsStore &settings, WifiManager &wifi, AudioManager &a
       syncedVersion_(0xFFFFFFFF),
       lastPollMs_(0),
       lastSegmentId_(0),
-      endDeadlineMs_(0) {}
+      endDeadlineMs_(0),
+      downloadHead_(0),
+      downloadCount_(0),
+      pollPageFull_(false),
+      nextDownloadMs_(0),
+      skippedStale_(0),
+      liveFloor_(0) {}
 
 void CloudSync::begin() {
   client_.configure(settings_.snapshot());
@@ -99,6 +127,7 @@ void CloudSync::acknowledgeStart() {
 
 void CloudSync::requestEnd() {
   ending_ = true;
+  session_.setEnding(true);  // phones show "lecture ended" while the last audio is flushed
   Command c = Command::END;
   xQueueSend(commands_, &c, 0);
 }
@@ -170,6 +199,11 @@ void CloudSync::fillStats(JsonObject stats) {
   stats["dropped"] = audio_.droppedChunks();
   stats["segments"] = segments_.segmentCount();
   stats["segmentBytes"] = segments_.bytesUsed();
+  // Diagnostics from the 2026-11-12 field data: unexplained mid-session reboots and chunks of
+  // pure digital silence. The reset reason tells a crash from a brownout or a manual reset.
+  stats["reset"] = resetReasonName();
+  stats["deadChunks"] = audio_.deadChunks();
+  stats["skippedStale"] = skippedStale_.load();
 }
 
 void CloudSync::taskLoop() {
@@ -255,7 +289,11 @@ bool CloudSync::doHello() {
     if (!s.isNull() && sessionId_.length() == 0 && startState_ == StartState::IDLE) {
       sessionId_ = s["id"] | "";
       resumeSeq_ = s["nextSeq"] | 1;
+      // Older segments of this session are skipped by the live-lag rule in downloadNext(), so a
+      // reboot never replays the lecture from the beginning.
       lastSegmentId_ = 0;
+      clearDownloads();
+      liveFloor_ = resumeSeq_;
       session_.beginSession(sessionId_);
       resumeAvailable_ = true;
       Serial.printf("[Cloud] Resuming session %s at seq %lu\n", sessionId_.c_str(),
@@ -284,6 +322,8 @@ void CloudSync::doStart() {
       sessionId_ = resp["id"] | "";
       startFirstSeq_ = resp["nextSeq"] | 1;
       lastSegmentId_ = 0;
+      clearDownloads();
+      liveFloor_ = startFirstSeq_;
       syncedVersion_ = 0xFFFFFFFF;
       lastSyncMs_ = 0;
       lastPollMs_ = 0;
@@ -315,6 +355,8 @@ void CloudSync::doEnd() {
     pending_ = nullptr;
   }
   audio_.discardQueued();
+  clearDownloads();
+  liveFloor_ = 0;
   sessionId_ = "";
   segments_.clear();
   session_.endSession();
@@ -428,11 +470,26 @@ bool CloudSync::doSync(uint32_t now) {
   return true;
 }
 
+void CloudSync::clearDownloads() {
+  for (uint8_t i = 0; i < kMaxPendingDownloads; ++i) {
+    downloads_[i].path = String();
+  }
+  downloadHead_ = 0;
+  downloadCount_ = 0;
+  pollPageFull_ = false;
+  nextDownloadMs_ = 0;
+}
+
 bool CloudSync::doPoll(uint32_t now) {
-  if (now - lastPollMs_ < Config::CLOUD_POLL_MS) {
+  if (downloadCount_ > 0) {
+    return downloadNext(now);  // finish the listed segments before asking for more
+  }
+  // A full page means more segments are waiting (e.g. after a reboot): ask again at once.
+  if (!pollPageFull_ && now - lastPollMs_ < Config::CLOUD_POLL_MS) {
     return false;
   }
   lastPollMs_ = now;
+  pollPageFull_ = false;
   char langs[Config::MAX_LANGUAGES][8];
   uint8_t langCount = listeners_.activeLanguages(langs, Config::MAX_LANGUAGES);
   if (langCount == 0) {
@@ -455,25 +512,88 @@ bool CloudSync::doPoll(uint32_t now) {
   markOnline(true);
   session_.setCloudCounts(resp["languages"].as<JsonArrayConst>());
 
-  for (JsonObjectConst seg : resp["segments"].as<JsonArrayConst>()) {
-    int64_t id = seg["id"] | 0LL;
-    const char *lang = seg["lang"] | "";
-    uint32_t seq = seg["seq"] | 0;
-    const char *path = seg["path"] | "";
-    uint32_t durationMs = seg["durationMs"] | 0;
-    uint8_t *data = nullptr;
-    size_t length = 0;
-    uint32_t t0 = millis();
-    CloudResult d = client_.download("translated-audio", path, Config::MAX_SEGMENT_BYTES, &data, &length);
-    if (!d.ok) {
-      Serial.printf("[Cloud] download %s/%lu failed: %s\n", lang, static_cast<unsigned long>(seq), d.error.c_str());
-      return false;  // keep the cursor; retry on the next poll
+  JsonArrayConst segs = resp["segments"].as<JsonArrayConst>();
+  pollPageFull_ = segs.size() >= kMaxPendingDownloads;
+  downloadHead_ = 0;
+  downloadCount_ = 0;
+  for (JsonObjectConst seg : segs) {
+    if (downloadCount_ >= kMaxPendingDownloads) {
+      break;
     }
-    segments_.put(lang, id, seq, durationMs, data, length);
-    lastSegmentId_ = std::max<int64_t>(lastSegmentId_, id);
-    session_.setTranslating(true);
-    Serial.printf("[Cloud] Segment %s/%lu (%u bytes) in %lu ms\n", lang, static_cast<unsigned long>(seq),
-                  static_cast<unsigned>(length), static_cast<unsigned long>(millis() - t0));
+    PendingDownload &d = downloads_[downloadCount_++];
+    d.id = seg["id"] | 0LL;
+    d.seq = seg["seq"] | 0;
+    // Translated segments are numbered per utterance; their age is judged by the source chunk.
+    d.chunkSeq = seg["chunkSeq"] | d.seq;
+    d.durationMs = seg["durationMs"] | 0;
+    strncpy(d.lang, seg["lang"] | "", sizeof(d.lang) - 1);
+    d.lang[sizeof(d.lang) - 1] = '\0';
+    d.path = seg["path"] | "";
   }
+  return downloadCount_ > 0;
+}
+
+// Downloads (or skips) the oldest listed segment. One per call, so uploads get every other turn.
+bool CloudSync::downloadNext(uint32_t now) {
+  if (static_cast<int32_t>(now - nextDownloadMs_) < 0) {
+    return false;
+  }
+  PendingDownload &seg = downloads_[downloadHead_];
+  auto advance = [&]() {
+    lastSegmentId_ = std::max<int64_t>(lastSegmentId_, seg.id);
+    seg.path = String();
+    downloadHead_++;
+    downloadCount_--;
+    if (downloadCount_ == 0) {
+      downloadHead_ = 0;
+    }
+  };
+
+  // Too far behind the microphone to be useful live: skip it without spending bandwidth.
+  uint32_t live = std::max<uint32_t>(audio_.liveSeq(), liveFloor_);
+  if (live > seg.chunkSeq + Config::MAX_SEGMENT_LAG_CHUNKS) {
+    skippedStale_++;
+    Serial.printf("[Cloud] Segment %s/%lu skipped: %lu chunks behind live\n", seg.lang,
+                  static_cast<unsigned long>(seg.seq), static_cast<unsigned long>(live - seg.chunkSeq));
+    advance();
+    return true;
+  }
+
+  uint8_t *data = nullptr;
+  size_t length = 0;
+  uint32_t t0 = millis();
+  CloudResult d = client_.download("translated-audio", seg.path, Config::MAX_SEGMENT_BYTES, &data, &length);
+  if (!d.ok) {
+    Serial.printf("[Cloud] download %s/%lu failed: %s\n", seg.lang, static_cast<unsigned long>(seg.seq),
+                  d.error.c_str());
+    // A 4xx (object gone, too large) will never succeed: skip it rather than stall delivery.
+    // Anything else (network, 5xx, expired token) is retried shortly.
+    bool permanent = d.error == "segment too large" ||
+                     (d.httpCode >= 400 && d.httpCode < 500 && d.httpCode != 401 && d.httpCode != 408 &&
+                      d.httpCode != 429);
+    if (permanent) {
+      advance();
+    } else {
+      nextDownloadMs_ = now + 1000;
+    }
+    return false;
+  }
+  // A WAV with no samples (header only) is not translated audio and must not turn the LED green.
+  bool playable = length > kMinPlayableBytes;
+  bool stored = false;
+  if (playable) {
+    stored = segments_.put(seg.lang, seg.id, seg.seq, seg.durationMs, data, length);  // takes ownership
+  } else {
+    free(data);
+  }
+  if (stored && !ending_) {
+    // The LED's blue -> green change is driven by this event only: translated audio downloaded
+    // from the cloud and stored on the Hub, ready for phones.
+    session_.setTranslating(true);
+  }
+  Serial.printf("[Cloud] Segment %s/%lu (%u bytes) %s in %lu ms\n", seg.lang, static_cast<unsigned long>(seg.seq),
+                static_cast<unsigned>(length), stored ? "stored" : "rejected",
+                static_cast<unsigned long>(millis() - t0));
+  advance();
   return true;
 }

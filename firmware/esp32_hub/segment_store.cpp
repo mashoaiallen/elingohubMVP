@@ -64,6 +64,19 @@ void SegmentStore::evictLocked(Ring &ring, uint8_t index) {
   dropLocked(segment);
 }
 
+bool SegmentStore::fresh(const Segment *segment, uint32_t now) {
+  return now - segment->receivedMs < Config::SEGMENT_MAX_AGE_MS;
+}
+
+void SegmentStore::pruneStaleLocked(uint32_t now) {
+  for (Ring &r : rings_) {
+    // Rings are ordered by seq, which follows arrival closely; drop stale entries from the front.
+    while (r.count > 0 && !fresh(r.items[0], now)) {
+      evictLocked(r, 0);
+    }
+  }
+}
+
 bool SegmentStore::evictOldestLocked() {
   Ring *oldestRing = nullptr;
   for (Ring &r : rings_) {
@@ -92,6 +105,7 @@ bool SegmentStore::put(const char *lang, int64_t id, uint32_t seq, uint32_t dura
       return true;
     }
   }
+  pruneStaleLocked(millis());
   while (bytesUsed_ + length > Config::SEGMENT_MEMORY_BUDGET && evictOldestLocked()) {
   }
   if (ring->count >= Config::SEGMENTS_PER_LANGUAGE) {
@@ -127,8 +141,9 @@ Segment *SegmentStore::acquire(const char *lang, uint32_t seq) {
   if (ring == nullptr) {
     return nullptr;
   }
+  uint32_t now = millis();
   for (uint8_t i = 0; i < ring->count; ++i) {
-    if (ring->items[i]->seq == seq) {
+    if (ring->items[i]->seq == seq && fresh(ring->items[i], now)) {
       ring->items[i]->refs++;
       return ring->items[i];
     }
@@ -157,13 +172,15 @@ uint8_t SegmentStore::list(const char *lang, int32_t afterSeq, JsonArray out) co
     return 0;
   }
   uint8_t n = 0;
+  uint32_t now = millis();
   for (uint8_t i = 0; i < ring->count; ++i) {
     const Segment *s = ring->items[i];
-    if (static_cast<int32_t>(s->seq) > afterSeq) {
+    if (static_cast<int32_t>(s->seq) > afterSeq && fresh(s, now)) {
       JsonObject o = out.add<JsonObject>();
       o["seq"] = s->seq;
       o["durationMs"] = s->durationMs;
       o["bytes"] = s->length;
+      o["ageMs"] = now - s->receivedMs;  // the page only joins at a segment that is still recent
       ++n;
     }
   }
@@ -173,7 +190,7 @@ uint8_t SegmentStore::list(const char *lang, int32_t afterSeq, JsonArray out) co
 int32_t SegmentStore::latestSeq(const char *lang) const {
   Lock lock(mutex_);
   const Ring *ring = ringFor(lang);
-  if (ring == nullptr || ring->count == 0) {
+  if (ring == nullptr || ring->count == 0 || !fresh(ring->items[ring->count - 1], millis())) {
     return -1;
   }
   return static_cast<int32_t>(ring->items[ring->count - 1]->seq);

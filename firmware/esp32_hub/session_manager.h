@@ -17,6 +17,10 @@ struct LanguageInfo {
 
 struct HubSnapshot {
   bool sessionActive;
+  bool ending;              // end requested (button or cloud); final audio still being flushed
+  uint32_t sessionNumber;   // changes with every session; phones reset their audio cursor on change
+  bool hasEnded;            // a session has ended since boot (endedAtMs is valid)
+  uint32_t endedAtMs;
   char sessionId[40];
   uint32_t sessionStartedMs;
   bool translating;   // at least one translated segment has arrived this session
@@ -37,6 +41,7 @@ class SessionManager {
   void beginSession(const String &sessionId);
   void endSession();
   bool hasActiveSession() const;
+  uint32_t sessionNumber() const;
   String sessionId() const;
 
   void setHub(const char *id, const char *name);
@@ -48,6 +53,7 @@ class SessionManager {
   void setCloudCounts(JsonArrayConst counts);
 
   void setTranslating(bool value);
+  void setEnding(bool value);
   void setDegraded(bool value);
   void setCloudOnline(bool value);
   void setSetupMode(bool value);

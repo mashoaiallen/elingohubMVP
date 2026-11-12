@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "adpcm.h"
 #include "config.h"
 #include "pins.h"
 
@@ -80,6 +81,9 @@ AudioManager::AudioManager()
       dropped_(0),
       captured_(0),
       firstSeq_(1),
+      liveSeq_(0),
+      deadChunks_(0),
+      deadRun_(0),
       i2sDriverInstalled_(false),
       currentSlot_(Config::AUDIO_PRIMARY_I2S_SLOT == 1 ? I2sSlot::RIGHT : I2sSlot::LEFT),
       slotCheckedThisRun_(false),
@@ -189,6 +193,14 @@ uint32_t AudioManager::capturedChunks() const {
   return captured_;
 }
 
+uint32_t AudioManager::liveSeq() const {
+  return liveSeq_;
+}
+
+uint32_t AudioManager::deadChunks() const {
+  return deadChunks_;
+}
+
 const char *AudioManager::lastError() const {
   return lastError_;
 }
@@ -242,6 +254,8 @@ void AudioManager::taskLoop() {
 
 void AudioManager::beginRun() {
   nextSeq_ = firstSeq_;
+  liveSeq_ = nextSeq_;
+  deadRun_ = 0;
   hpfPreviousInput_ = 0.0f;
   hpfPreviousOutput_ = 0.0f;
   slotCheckedThisRun_ = false;
@@ -273,6 +287,7 @@ void AudioManager::endRun() {
     current_ = nullptr;
   }
   running_ = false;
+  liveSeq_ = 0;
   Serial.println("[Audio] Capture stopped");
 }
 
@@ -348,20 +363,59 @@ void AudioManager::finalizeChunk(bool tail) {
 
   writeWavHeader(chunk->data, pcmBytesWritten_);
   chunk->length = WAV_HEADER_BYTES + pcmBytesWritten_;
+  if (Config::AUDIO_UPLOAD_ADPCM) {
+    compressChunk(chunk);
+  }
   chunk->durationMs = pcmBytesWritten_ * 1000UL /
                       (Config::AUDIO_SAMPLE_RATE * Config::AUDIO_CHANNELS * (Config::AUDIO_BITS_PER_SAMPLE / 8));
   chunk->seq = nextSeq_++;
+  liveSeq_ = nextSeq_;
   chunk->rms = rms;
   chunk->peak = peak_;
   chunk->silent = rms < Config::AUDIO_SILENCE_RMS_THRESHOLD;
   captured_++;
+  // peak 0 = every sample exactly 0. A quiet room still gives RMS in the hundreds with this mic,
+  // so this means the INMP441 data line is not toggling (field data 2026-11-12: whole sessions
+  // like this, alternating with normal chunks - an intermittent connection, not a config fault).
+  bool dead = sampleCount_ > 0 && peak_ == 0;
+  if (dead) {
+    deadChunks_++;
+    deadRun_++;
+  } else {
+    if (deadRun_ >= Config::MIC_DEAD_WARN_CHUNKS) {
+      Serial.printf("[Audio] Microphone signal back after %lu dead chunks\n", static_cast<unsigned long>(deadRun_));
+    }
+    deadRun_ = 0;
+  }
   Serial.printf("[Audio] Chunk %lu ready: %u ms, RMS %lu, peak %ld%s\n", static_cast<unsigned long>(chunk->seq),
                 static_cast<unsigned>(chunk->durationMs), static_cast<unsigned long>(rms),
-                static_cast<long>(peak_), chunk->silent ? " (silent)" : "");
+                static_cast<long>(peak_), dead ? " (NO SIGNAL)" : chunk->silent ? " (silent)" : "");
+  if (dead && deadRun_ == Config::MIC_DEAD_WARN_CHUNKS) {
+    Serial.printf("[Audio] WARNING: microphone sends no data (%s slot, %lu chunks of exact zeros). Check the "
+                  "INMP441 wiring: VDD 3.3 V, GND, L/R to GND, SCK=GPIO%u, WS=GPIO%u, SD=GPIO%u\n",
+                  slotName(currentSlot_), static_cast<unsigned long>(deadRun_), Pins::I2S_SCK, Pins::I2S_WS,
+                  Pins::I2S_SD);
+  }
   enqueue(chunk);
   if (!tail) {
     allocateChunk();
   }
+}
+
+// 16-bit PCM -> IMA ADPCM WAV (4:1), so uploads keep up over this core's 5.7 KB TCP window.
+// RMS/peak were already measured on the PCM. If PSRAM is short, the PCM chunk is sent instead
+// (the cloud accepts both).
+void AudioManager::compressChunk(AudioChunk *chunk) {
+  uint32_t samples = (chunk->length - WAV_HEADER_BYTES) / sizeof(int16_t);
+  uint8_t *out = allocatePsram(Adpcm::wavBytes(samples));
+  if (out == nullptr) {
+    return;
+  }
+  const int16_t *pcm = reinterpret_cast<const int16_t *>(chunk->data + WAV_HEADER_BYTES);
+  size_t length = Adpcm::encodeWav(pcm, samples, Config::AUDIO_SAMPLE_RATE, out);
+  free(chunk->data);
+  chunk->data = out;
+  chunk->length = length;
 }
 
 void AudioManager::enqueue(AudioChunk *chunk) {

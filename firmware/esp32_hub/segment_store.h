@@ -12,6 +12,8 @@
 // served to every phone listening to that language; each phone keeps its own playback cursor
 // (seq), so nothing is consumed or removed by a read. Bounded by SEGMENTS_PER_LANGUAGE and
 // SEGMENT_MEMORY_BUDGET; segments being served are reference-counted and freed afterwards.
+// Segments older than SEGMENT_MAX_AGE_MS are hidden from phones and pruned: a phone that joins
+// a language nobody has listened to for a while must not hear minutes-old audio.
 struct Segment {
   int64_t id;
   uint32_t seq;
@@ -49,6 +51,8 @@ class SegmentStore {
 
   Ring *ringFor(const char *lang, bool create);
   const Ring *ringFor(const char *lang) const;
+  static bool fresh(const Segment *segment, uint32_t now);
+  void pruneStaleLocked(uint32_t now);
   void evictLocked(Ring &ring, uint8_t index);
   void dropLocked(Segment *segment);
   bool evictOldestLocked();

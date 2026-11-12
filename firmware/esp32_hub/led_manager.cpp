@@ -2,12 +2,23 @@
 
 #include "pins.h"
 
-LedManager::LedManager() : pattern_(LedPattern::OFF), patternStartedMs_(0), lastOutput_(0xFF) {}
+LedManager::LedManager() : override_(-1), pattern_(LedPattern::OFF), patternStartedMs_(0), lastOutput_(0xFF) {}
+
+void LedManager::setOverride(int8_t mask) {
+  override_ = mask;
+  lastOutput_ = 0xFF;  // force the next write
+  update(millis());
+}
 
 void LedManager::begin() {
+  // Drive all three channels LOW before switching to output so the LED never flashes at boot.
+  digitalWrite(Pins::LED_RED, LOW);
+  digitalWrite(Pins::LED_GREEN, LOW);
+  digitalWrite(Pins::LED_BLUE, LOW);
   pinMode(Pins::LED_RED, OUTPUT);
   pinMode(Pins::LED_GREEN, OUTPUT);
   pinMode(Pins::LED_BLUE, OUTPUT);
+  lastOutput_ = 0xFF;
   write(false, false, false);
 }
 
@@ -26,6 +37,10 @@ LedPattern LedManager::pattern() const {
 }
 
 void LedManager::update(uint32_t now) {
+  if (override_ >= 0) {
+    write(override_ & 1, override_ & 2, override_ & 4);
+    return;
+  }
   uint32_t t = now - patternStartedMs_;
   switch (pattern_) {
     case LedPattern::OFF:
@@ -47,12 +62,6 @@ void LedManager::update(uint32_t now) {
       break;
     case LedPattern::SESSION_TRANSLATING:
       write(false, true, false);
-      break;
-    case LedPattern::DEGRADED_BLUE:
-      write(false, false, (t % 1000) < 500);
-      break;
-    case LedPattern::DEGRADED_GREEN:
-      write(false, (t % 1000) < 500, false);
       break;
     case LedPattern::SESSION_ENDED:
       write(true, false, false);
@@ -82,8 +91,6 @@ const char *LedManager::name(LedPattern pattern) {
     case LedPattern::SETUP: return "SETUP";
     case LedPattern::SESSION_WAITING: return "SESSION_WAITING(blue)";
     case LedPattern::SESSION_TRANSLATING: return "SESSION_TRANSLATING(green)";
-    case LedPattern::DEGRADED_BLUE: return "DEGRADED(blue blink)";
-    case LedPattern::DEGRADED_GREEN: return "DEGRADED(green blink)";
     case LedPattern::SESSION_ENDED: return "SESSION_ENDED(red)";
     case LedPattern::FATAL: return "FATAL";
   }

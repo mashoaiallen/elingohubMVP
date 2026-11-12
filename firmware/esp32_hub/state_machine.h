@@ -18,9 +18,12 @@
 // class only reacts to the button, task results and timers, and drives the status LED.
 //
 //   BOOTING --> OFFLINE <--> READY --press--> STARTING --cloud ok--> IN_SESSION --press--> SESSION_ENDED
-//                  ^                              |  cloud failed          |  cloud ended it      | 5 s
+//                  ^         LED off               blue        blue, then green (solid)    red (solid)
+//                  |                              |  failed/timeout        |  cloud ended it      | 5 s
 //                  +------------------------------+-----------------------+----------------------+
-//   Any state --> FATAL on a microphone/PSRAM fault.  Long press (5 s) toggles setup mode anywhere.
+//   STARTING stays blue and waits until the previous session has finished ending before asking
+//   the cloud. Presses in STARTING and SESSION_ENDED are ignored. Any state --> FATAL on a
+//   microphone/PSRAM fault. Long press (5 s) toggles setup mode anywhere.
 class StateMachine {
  public:
   StateMachine(SettingsStore &settings, WifiManager &wifi, LedManager &led, ButtonManager &button,
@@ -57,6 +60,8 @@ class StateMachine {
   uint32_t stateEnteredMs_;
   uint32_t lastExpiryMs_;
   uint32_t apRestartAtMs_;
+  uint32_t startRequestedMs_;
+  bool startRequested_;
   bool hardwareFault_;
 };
 

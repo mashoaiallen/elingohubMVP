@@ -5,6 +5,9 @@
   var $ = function (id) { return document.getElementById(id); };
   var HEARTBEAT_MS = 10000;
   var STATUS_MS = 3000;
+  // When joining (or resuming after a long pause) the newest segment is played only if it is at
+  // most this old; otherwise the page waits for the next one instead of playing stale audio.
+  var JOIN_MAX_AGE_MS = 15000;
 
   // ---------------------------------------------------------------- storage (may be blocked)
   var store = {
@@ -78,6 +81,12 @@
     return l ? l.nativeName || l.name : '—';
   }
 
+  // True for 10 minutes after a session ends (the Hub reports how long ago that was).
+  function lectureEnded() {
+    var s = state.status && state.status.session;
+    return !!s && !s.active && typeof s.endedAgoS === 'number' && s.endedAgoS < 600;
+  }
+
   function renderStatus() {
     var s = state.status;
     var pill = $('conn-pill');
@@ -88,10 +97,18 @@
       return;
     }
     $('hub-name').textContent = s.hub.name || 'eLingo Hub';
-    if (s.session.active) {
+    if (s.session.active && s.session.ending) {
+      pill.textContent = 'Ending';
+      pill.className = 'pill pill-wait';
+      $('session-line').textContent = 'The lecturer has ended the session';
+    } else if (s.session.active) {
       pill.textContent = s.session.degraded || !s.cloud.online ? 'Live · weak link' : 'Live';
       pill.className = s.session.degraded || !s.cloud.online ? 'pill pill-wait' : 'pill pill-ok';
       $('session-line').textContent = 'Lecture in progress';
+    } else if (lectureEnded()) {
+      pill.textContent = 'Ended';
+      pill.className = 'pill pill-wait';
+      $('session-line').textContent = 'The lecture has ended. Keep this page open for the next one.';
     } else {
       pill.textContent = 'Waiting';
       pill.className = 'pill pill-wait';
@@ -201,14 +218,37 @@
   }
 
   // ---------------------------------------------------------------- audio player
+  // Float samples -> AudioBuffer. Some older iOS versions reject buffers below 22.05 kHz; then
+  // the audio is resampled (linear) to the context's own rate.
+  function toAudioBuffer(ctx, samples, rate) {
+    try {
+      var b = ctx.createBuffer(1, Math.max(1, samples.length), rate);
+      b.getChannelData(0).set(samples);
+      return b;
+    } catch (e) {
+      var outRate = ctx.sampleRate, n = Math.max(1, Math.round(samples.length * outRate / rate));
+      var out = ctx.createBuffer(1, n, outRate), d = out.getChannelData(0), k = rate / outRate;
+      for (var i = 0; i < n; i++) {
+        var x = i * k, j = Math.floor(x), f = x - j;
+        d[i] = (samples[j] || 0) * (1 - f) + (samples[j + 1] || 0) * f;
+      }
+      return out;
+    }
+  }
+
   // Segments are fetched one by one and scheduled back-to-back on a Web Audio clock (gapless).
   // Each phone has its own cursor; reading a segment does not remove it for anyone else.
+  // A segment is never played twice: `played` remembers the highest seq handed to the audio clock
+  // per session and language, and survives Leave/Pause/switching languages.
   var player = {
     ctx: null,
     started: false,
     running: false,
     lang: null,
     cursor: -1,
+    session: null,  // Hub session number the cursor belongs to
+    played: {},     // "session|lang" -> highest seq scheduled
+    jumpLive: false,
     nextTime: 0,
     generation: 0,
     sources: [],
@@ -225,8 +265,8 @@
     start: function (lang) {
       var self = this;
       return this.ensureContext().then(function () {
-        // After a long pause, jump to the live edge instead of replaying old audio.
-        if (self.pausedAt && Date.now() - self.pausedAt > 15000) self.cursor = -1;
+        // After a long pause, jump to the live edge (never back to audio already heard).
+        if (self.pausedAt && Date.now() - self.pausedAt > 15000) self.jumpLive = true;
         self.pausedAt = 0;
         self.lang = lang;
         self.started = true;
@@ -260,11 +300,18 @@
       this.sources.forEach(function (s) { try { s.stop(); } catch (e) { /* already ended */ } });
       this.sources = [];
     },
+    playedFloor: function (session, lang) {
+      var v = this.played[session + '|' + lang];
+      return typeof v === 'number' ? v : -1;
+    },
     bufferedSeconds: function () {
       return this.ctx ? Math.max(0, this.nextTime - this.ctx.currentTime) : 0;
     },
     decode: function (buf) {
       var ctx = this.ctx;
+      // Translated audio arrives as IMA ADPCM WAV, which browsers cannot decode themselves.
+      var adpcm = window.ElingoAdpcm ? window.ElingoAdpcm.decode(buf) : null;
+      if (adpcm) return Promise.resolve(toAudioBuffer(ctx, adpcm.samples, adpcm.sampleRate));
       return new Promise(function (resolve, reject) {
         var p = ctx.decodeAudioData(buf, resolve, reject);
         if (p && p.then) p.then(resolve, reject);
@@ -277,22 +324,51 @@
         if (!alive()) return;
         if (self.bufferedSeconds() > 6) { setTimeout(step, 500); return; }
         var lang = self.lang;
-        api('/api/segments?lang=' + encodeURIComponent(lang) + '&after=' + self.cursor)
+        var after = Math.max(self.cursor, self.session === null ? -1 : self.playedFloor(self.session, lang));
+        api('/api/segments?lang=' + encodeURIComponent(lang) + '&after=' + after)
           .then(function (list) {
             if (!alive()) return;  // paused/switched while the request was in flight
-            var segs = list.segments || [];
-            if (self.cursor < 0 && segs.length > 1) segs = segs.slice(-1);  // join at the live edge
+            if (list.session !== self.session) {
+              // A new (or ended) session: its numbering restarts, so the old cursor is meaningless,
+              // and audio of the old session still scheduled on this phone is dropped at once.
+              var changed = self.session !== null;
+              self.session = list.session;
+              if (changed) {
+                self.cursor = -1;
+                self.played = {};
+                self.jumpLive = false;
+                self.stopSources();
+                self.nextTime = 0;
+                return;
+              }
+            }
+            var session = list.session;
+            var floor = Math.max(self.cursor, self.playedFloor(session, lang));
+            var segs = (list.segments || []).filter(function (s) { return s.seq > floor; });
+            if ((self.cursor < 0 || self.jumpLive) && segs.length) {
+              // Join at the live edge, but only if the newest segment is still recent.
+              var newest = segs[segs.length - 1];
+              self.jumpLive = false;
+              if (typeof newest.ageMs === 'number' && newest.ageMs > JOIN_MAX_AGE_MS) {
+                self.cursor = newest.seq;  // stale: wait for the next one instead
+                segs = [];
+              } else {
+                segs = [newest];
+              }
+            }
             if (!segs.length) {
               // Nothing new yet. Only report waiting once the already-scheduled audio has run out.
               if (self.bufferedSeconds() < 0.25) {
-                setPlayState(list.sessionActive ? 'Waiting for translation…' : 'Waiting for the lecture');
+                setPlayState(list.sessionActive ? 'Waiting for translation…'
+                  : (lectureEnded() ? 'Lecture ended' : 'Waiting for the lecture'));
               }
               return sleep(1000);
             }
             return segs.reduce(function (chain, seg) {
               return chain.then(function () {
-                if (!alive() || self.lang !== lang) return;
-                return fetch('/api/audio?lang=' + encodeURIComponent(lang) + '&seq=' + seg.seq, { cache: 'no-store' })
+                if (!alive() || self.lang !== lang || self.session !== session) return;
+                return fetch('/api/audio?lang=' + encodeURIComponent(lang) + '&seq=' + seg.seq +
+                             '&session=' + session, { cache: 'no-store' })
                   .then(function (res) {
                     if (res.status === 404) { self.cursor = seg.seq; return null; }  // already evicted: skip
                     if (!res.ok) throw new Error('HTTP ' + res.status);
@@ -300,7 +376,7 @@
                   })
                   .then(function (buf) { return buf ? self.decode(buf) : null; })
                   .then(function (audio) {
-                    if (!audio || !alive() || self.lang !== lang) return;
+                    if (!audio || !alive() || self.lang !== lang || self.session !== session) return;
                     var src = self.ctx.createBufferSource();
                     src.buffer = audio;
                     src.connect(self.ctx.destination);
@@ -314,6 +390,8 @@
                       if (i >= 0) self.sources.splice(i, 1);
                     };
                     self.cursor = seg.seq;
+                    var key = session + '|' + lang;
+                    self.played[key] = Math.max(self.playedFloor(session, lang), seg.seq);
                     setPlayState('Playing');
                     setMessage('');
                   });

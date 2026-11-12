@@ -1,5 +1,7 @@
 #include "session_manager.h"
 
+#include <esp_random.h>
+
 #include <cstring>
 
 namespace {
@@ -24,11 +26,15 @@ SessionManager::SessionManager() : mutex_(xSemaphoreCreateMutex()) {
   memset(&state_, 0, sizeof(state_));
   memset(languages_, 0, sizeof(languages_));
   copyText(state_.hubName, sizeof(state_.hubName), "eLingo Hub");
+  // Random start so a phone that stayed connected across a Hub reboot never sees a reused number.
+  state_.sessionNumber = esp_random() & 0x00FFFFFF;
 }
 
 void SessionManager::beginSession(const String &sessionId) {
   Lock lock(mutex_);
   state_.sessionActive = true;
+  state_.ending = false;
+  state_.sessionNumber++;
   copyText(state_.sessionId, sizeof(state_.sessionId), sessionId.c_str());
   state_.sessionStartedMs = millis();
   state_.translating = false;
@@ -40,7 +46,13 @@ void SessionManager::beginSession(const String &sessionId) {
 
 void SessionManager::endSession() {
   Lock lock(mutex_);
+  if (state_.sessionActive) {
+    state_.hasEnded = true;
+    state_.endedAtMs = millis();
+  }
   state_.sessionActive = false;
+  state_.ending = false;
+  state_.sessionNumber++;  // phones drop their cursor even if they never see the next session start
   state_.sessionId[0] = '\0';
   state_.translating = false;
   state_.degraded = false;
@@ -52,6 +64,16 @@ void SessionManager::endSession() {
 bool SessionManager::hasActiveSession() const {
   Lock lock(mutex_);
   return state_.sessionActive;
+}
+
+uint32_t SessionManager::sessionNumber() const {
+  Lock lock(mutex_);
+  return state_.sessionNumber;
+}
+
+void SessionManager::setEnding(bool value) {
+  Lock lock(mutex_);
+  state_.ending = value && state_.sessionActive;
 }
 
 String SessionManager::sessionId() const {

@@ -19,6 +19,8 @@ StateMachine::StateMachine(SettingsStore &settings, WifiManager &wifi, LedManage
       stateEnteredMs_(0),
       lastExpiryMs_(0),
       apRestartAtMs_(0),
+      startRequestedMs_(0),
+      startRequested_(false),
       hardwareFault_(false) {}
 
 void StateMachine::begin(bool hardwareFault) {
@@ -64,10 +66,13 @@ void StateMachine::beginCapture(uint32_t firstSeq) {
   transitionTo(HubState::IN_SESSION);
 }
 
+// Called after the LED has already changed, so the colour follows the event immediately even
+// though stopping the microphone can take up to a second.
 void StateMachine::endSession(const char *reason) {
   Serial.printf("[Hub] Ending session (%s)\n", reason);
   audio_.stopCapture();  // flushes the last partial chunk into the upload queue
-  cloud_.requestEnd();   // uploads what is left (<= 10 s), then ends the session in the cloud
+  cloud_.requestEnd();   // uploads what is left (<= 10 s), ends the session in the cloud, clears
+                         // the Hub's audio and tells phones the lecture has ended
 }
 
 void StateMachine::handleButton(ButtonEvent event) {
@@ -81,13 +86,18 @@ void StateMachine::handleButton(ButtonEvent event) {
   switch (state_) {
     case HubState::READY:
       Serial.println("[Hub] Button: start session");
-      cloud_.requestStart();
-      transitionTo(HubState::STARTING);
+      startRequested_ = false;           // sent from update() once any previous session has fully ended
+      transitionTo(HubState::STARTING);  // blue on now
       break;
     case HubState::IN_SESSION:
       Serial.println("[Hub] Button: end session");
+      transitionTo(HubState::SESSION_ENDED);  // red on now, held for 5 s
       endSession("button");
-      transitionTo(HubState::SESSION_ENDED);
+      break;
+    case HubState::STARTING:
+    case HubState::SESSION_ENDED:
+      // Repeated presses while a start or an end is in progress are ignored on purpose.
+      Serial.printf("[Hub] Button ignored in %s\n", stateName());
       break;
     case HubState::OFFLINE:
       Serial.println("[Hub] Button ignored: no cloud connection (red blink = offline)");
@@ -144,13 +154,31 @@ void StateMachine::update() {
       break;
 
     case HubState::STARTING: {
+      if (!startRequested_) {
+        if (!cloud_.ending()) {
+          cloud_.requestStart();
+          startRequested_ = true;
+          startRequestedMs_ = now;
+        } else if (now - stateEnteredMs_ > Config::END_FLUSH_MAX_MS + Config::SESSION_START_TIMEOUT_MS) {
+          Serial.println("[Hub] Session start failed: previous session still ending");
+          transitionTo(cloud_.online() ? HubState::READY : HubState::OFFLINE);
+        }
+        break;  // previous session still uploading its last audio: stay blue and wait
+      }
       StartState start = cloud_.startState();
       if (start == StartState::STARTED) {
         cloud_.acknowledgeStart();
         beginCapture(cloud_.startFirstSeq());
-      } else if (start == StartState::FAILED || now - stateEnteredMs_ > Config::SESSION_START_TIMEOUT_MS) {
+      } else if (start == StartState::FAILED) {
         cloud_.acknowledgeStart();
         Serial.println("[Hub] Session start failed");
+        transitionTo(cloud_.online() ? HubState::READY : HubState::OFFLINE);
+      } else if (now - startRequestedMs_ > Config::SESSION_START_TIMEOUT_MS) {
+        cloud_.acknowledgeStart();
+        // The request may still succeed later; ending it means no session is left running in the
+        // cloud while the Hub is not recording.
+        cloud_.requestEnd();
+        Serial.println("[Hub] Session start timed out");
         transitionTo(cloud_.online() ? HubState::READY : HubState::OFFLINE);
       }
       break;
@@ -159,11 +187,11 @@ void StateMachine::update() {
     case HubState::IN_SESSION:
       if (audio_.hardwareFault()) {
         Serial.printf("[Hub] Microphone fault: %s\n", audio_.lastError());
-        endSession("hardware fault");
         transitionTo(HubState::FATAL);
+        endSession("hardware fault");
       } else if (cloud_.takeRemoteEnd()) {
-        endSession("ended by cloud");
         transitionTo(HubState::SESSION_ENDED);
+        endSession("ended by cloud");
       }
       break;
 
@@ -197,15 +225,11 @@ void StateMachine::refreshLed() {
     case HubState::STARTING:
       pattern = LedPattern::SESSION_WAITING;  // blue as soon as the button is pressed
       break;
-    case HubState::IN_SESSION: {
-      bool degraded = snap.degraded || !cloud_.online();
-      if (snap.translating) {
-        pattern = degraded ? LedPattern::DEGRADED_GREEN : LedPattern::SESSION_TRANSLATING;
-      } else {
-        pattern = degraded ? LedPattern::DEGRADED_BLUE : LedPattern::SESSION_WAITING;
-      }
+    case HubState::IN_SESSION:
+      // Solid blue until the first translated audio is stored on the Hub, then solid green for the
+      // rest of the session. A weak cloud link never changes the colour (see the student page).
+      pattern = snap.translating ? LedPattern::SESSION_TRANSLATING : LedPattern::SESSION_WAITING;
       break;
-    }
     case HubState::OFFLINE:
       pattern = server_.setupActive() ? LedPattern::SETUP : LedPattern::OFFLINE;
       break;

@@ -273,6 +273,13 @@ esp_err_t LocalServer::handleStatus(httpd_req_t *req) {
   doc["hub"]["name"] = snap.hubName;
   doc["hub"]["firmware"] = Config::FIRMWARE_VERSION;
   doc["session"]["active"] = snap.sessionActive;
+  doc["session"]["number"] = snap.sessionNumber;
+  doc["session"]["ending"] = snap.ending;
+  if (!snap.sessionActive && snap.hasEnded) {
+    doc["session"]["endedAgoS"] = (millis() - snap.endedAtMs) / 1000;
+  } else {
+    doc["session"]["endedAgoS"] = nullptr;
+  }
   doc["session"]["translating"] = snap.translating;
   doc["session"]["degraded"] = snap.degraded;
   doc["session"]["elapsedS"] = snap.sessionActive ? (millis() - snap.sessionStartedMs) / 1000 : 0;
@@ -371,6 +378,8 @@ esp_err_t LocalServer::handleSegments(httpd_req_t *req) {
   queryValue(req, "after", after, sizeof(after));
   JsonDocument doc;
   doc["language"] = lang;
+  // Sequence numbers restart with every session, so the page resets its cursor when this changes.
+  doc["session"] = s->session_.sessionNumber();
   doc["sessionActive"] = s->session_.hasActiveSession();
   doc["latestSeq"] = s->segments_.latestSeq(lang);
   s->segments_.list(lang, atoi(after), doc["segments"].to<JsonArray>());
@@ -384,6 +393,13 @@ esp_err_t LocalServer::handleAudio(httpd_req_t *req) {
   char seqText[12] = "";
   if (!queryValue(req, "lang", lang, sizeof(lang)) || !queryValue(req, "seq", seqText, sizeof(seqText))) {
     return sendError(req, "400 Bad Request", "bad_request", "lang and seq are required.");
+  }
+  // seq restarts every session: a request carrying another session's number (a phone that has not
+  // noticed the change yet) must not get this session's audio under the same seq.
+  char sessionText[12] = "";
+  if (queryValue(req, "session", sessionText, sizeof(sessionText)) &&
+      strtoul(sessionText, nullptr, 10) != s->session_.sessionNumber()) {
+    return sendError(req, "404 Not Found", "segment_gone", "That audio belongs to another session.");
   }
   Segment *segment = s->segments_.acquire(lang, static_cast<uint32_t>(strtoul(seqText, nullptr, 10)));
   if (segment == nullptr) {

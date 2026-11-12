@@ -9,7 +9,7 @@
 
 #include <atomic>
 
-// A finished 16 kHz / 16-bit / mono WAV chunk in PSRAM. Ownership passes to whoever takes it
+// A finished 16 kHz mono WAV chunk in PSRAM: IMA ADPCM (default) or 16-bit PCM. Ownership passes to whoever takes it
 // from the queue; give it back with AudioManager::releaseChunk().
 struct AudioChunk {
   uint8_t *data = nullptr;
@@ -43,6 +43,12 @@ class AudioManager {
   uint32_t queuedChunks() const;
   uint32_t droppedChunks() const;
   uint32_t capturedChunks() const;
+  // Sequence number of the chunk being recorded now (0 before the first capture). The cloud task
+  // uses it to recognise translated audio that is too far behind live to be worth playing.
+  uint32_t liveSeq() const;
+  // Chunks in which every sample was exactly 0: the INMP441 sent no data at all (wiring/power),
+  // which is different from a quiet room.
+  uint32_t deadChunks() const;
   const char *lastError() const;
 
  private:
@@ -56,6 +62,7 @@ class AudioManager {
   bool allocateChunk();
   void finalizeChunk(bool tail);
   void enqueue(AudioChunk *chunk);
+  void compressChunk(AudioChunk *chunk);
   void writeWavHeader(uint8_t *buffer, uint32_t pcmBytes) const;
   void resetChunkStats();
   void setError(const char *message);
@@ -75,6 +82,9 @@ class AudioManager {
   std::atomic<uint32_t> dropped_;
   std::atomic<uint32_t> captured_;
   std::atomic<uint32_t> firstSeq_;
+  std::atomic<uint32_t> liveSeq_;
+  std::atomic<uint32_t> deadChunks_;
+  uint32_t deadRun_;
 
   bool i2sDriverInstalled_;
   I2sSlot currentSlot_;

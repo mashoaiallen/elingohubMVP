@@ -25,6 +25,11 @@ enum class StartState : uint8_t { IDLE, PENDING, STARTED, FAILED };
 //   * upload queued chunks -> Storage, then hub_register_chunk (retries with backoff)
 //   * presence: full listener set via hub_sync (on change, at least every 5 s)
 //   * hub_poll for new segments of languages with local listeners -> download -> SegmentStore
+//
+// Bandwidth: this core's lwIP has a 5.7 KB TCP window, so one TLS connection moves roughly
+// 30-60 KB/s. Uploads and downloads therefore alternate (at most one download per loop pass) so a
+// burst of segments can never starve the microphone uploads, and segments too far behind live are
+// skipped without downloading them.
 class CloudSync {
  public:
   CloudSync(SettingsStore &settings, WifiManager &wifi, AudioManager &audio, ListenerRegistry &listeners,
@@ -61,6 +66,8 @@ class CloudSync {
   bool uploadPending(uint32_t now);
   bool doSync(uint32_t now);
   bool doPoll(uint32_t now);
+  bool downloadNext(uint32_t now);
+  void clearDownloads();
   void fillStats(JsonObject stats);
   void markOnline(bool ok);
   void backoff(uint32_t now);
@@ -100,6 +107,24 @@ class CloudSync {
   uint32_t lastPollMs_;
   int64_t lastSegmentId_;
   uint32_t endDeadlineMs_;
+
+  // Segments listed by the last hub_poll and not yet downloaded or skipped, in id order.
+  struct PendingDownload {
+    int64_t id;
+    uint32_t seq;
+    uint32_t chunkSeq;  // source chunk the audio ends in (= seq for loopback); used for the live-lag rule
+    uint32_t durationMs;
+    char lang[8];
+    String path;
+  };
+  static constexpr uint8_t kMaxPendingDownloads = 24;  // = hub_poll page size
+  PendingDownload downloads_[kMaxPendingDownloads];
+  uint8_t downloadHead_;
+  uint8_t downloadCount_;
+  bool pollPageFull_;
+  uint32_t nextDownloadMs_;
+  std::atomic<uint32_t> skippedStale_;
+  uint32_t liveFloor_;  // first seq of the current run (start or resume), until capture reports
 };
 
 #endif
