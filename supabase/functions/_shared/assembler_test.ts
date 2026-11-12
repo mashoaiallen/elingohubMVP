@@ -150,3 +150,22 @@ Deno.test("utterance language is the majority word language, normalised", () => 
   assertEquals(s.utterances[0].language, "af");
   assertEquals(s.utterances[0].text, "Goeie môre everyone.");
 });
+
+Deno.test("a sentence that waits too long is split at its last full stop, not mid-sentence", () => {
+  // Continuous speech: each chunk's words run right up to the chunk's end.
+  const mk = (seq: number, text: string, fromStart = false): PlacedWord[] => {
+    const ws = text.split(" ");
+    const t0 = (i: number) => (fromStart ? i * 0.4 : 5 - (ws.length - i) * 0.4);
+    return ws.map((t, i) => ({ text: t, seq, start: t0(i), end: t0(i) + 0.35 }));
+  };
+  const opts = (seq: number) => ({ currentSeq: seq, force: false, trailingPauseSec: 0, fallbackLanguage: null });
+  // Field case 2026-11-12: "For example, ... mechanical work. The efficiency ... of the heat" was
+  // sent as one utterance and "is converted into work." as the next.
+  let s = segment(emptyState(), mk(3, "For example, in a heat engine, chemical"), opts(3));
+  s = segment(s.state, mk(4, "energy in the fuel becomes heat, and part of that heat becomes mechanical"), opts(4));
+  s = segment(s.state, mk(5, "work. The efficiency of the engine tells us what fraction of the heat"), opts(5));
+  assertEquals(s.utterances.map((u) => u.text), ["For example, in a heat engine, chemical energy in the fuel becomes heat, and part of that heat becomes mechanical work."]);
+  s = segment(s.state, mk(6, "is converted into work. Please write", true), opts(6));
+  assertEquals(s.utterances.map((u) => u.text), ["The efficiency of the engine tells us what fraction of the heat is converted into work."]);
+  assertEquals(s.state.carry.map((w) => w.text), ["Please", "write"]);
+});

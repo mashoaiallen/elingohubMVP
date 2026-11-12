@@ -69,8 +69,10 @@ async function download(db: AiDb, bucket: string, path: string): Promise<Uint8Ar
   return new Uint8Array(await data.arrayBuffer());
 }
 
-function backoffSec(attempt: number): number {
-  return Math.min(60, 2 ** attempt); // 2, 4, 8 ...
+// Exponential backoff (2, 4, 8 s), or the provider's own "retry after" hint when it gives one
+// (rate limits), capped at 30 s so the audio is still worth delivering.
+function backoffSec(attempt: number, hint: number | null = null): number {
+  return Math.min(30, Math.max(2 ** attempt, hint ?? 0));
 }
 
 async function usage(db: AiDb, row: {
@@ -260,7 +262,7 @@ export async function processSttMessage(db: AiDb, msg: SttMessage, p: Providers)
     });
     await log(db, "error", "stt", err.message, chunk.id, { attempt: chunk.attempts, retryable: err.retryable });
     if (err.retryable && chunk.attempts < MAX_PROVIDER_ATTEMPTS) {
-      await call(db, "worker_stt_retry", { p_chunk_id: chunk.id, p_msg_id: msg.msg_id, p_delay_sec: backoffSec(chunk.attempts), p_error: err.message });
+      await call(db, "worker_stt_retry", { p_chunk_id: chunk.id, p_msg_id: msg.msg_id, p_delay_sec: backoffSec(chunk.attempts, err.retryAfterSec), p_error: err.message });
       return { msgId: msg.msg_id, outcome: "retry", error: err.message };
     }
     // Dead letter: the chunk is marked failed, the session moves on to the next chunk.
@@ -450,7 +452,7 @@ export async function processTtsMessage(db: AiDb, msg: TtsMessage, p: Providers)
     const err = e instanceof ProviderError ? e : new ProviderError(stage, (e as Error).message, true);
     await log(db, "error", stage, err.message, null, { jobId: b.job.id, attempt: b.job.attempts, retryable: err.retryable }, lang);
     if (err.retryable && b.job.attempts < MAX_PROVIDER_ATTEMPTS) {
-      await call(db, "worker_tts_retry", { p_job_id: b.job.id, p_msg_id: msg.msg_id, p_delay_sec: backoffSec(b.job.attempts), p_error: err.message });
+      await call(db, "worker_tts_retry", { p_job_id: b.job.id, p_msg_id: msg.msg_id, p_delay_sec: backoffSec(b.job.attempts, err.retryAfterSec), p_error: err.message });
       return { msgId: msg.msg_id, outcome: "retry", error: err.message };
     }
     await commit("failed", { p_error: err.message });

@@ -226,6 +226,18 @@ ELINGO_LIVE_PROVIDER_TESTS=1 DEEPGRAM_API_KEY=... GEMINI_API_KEY=... \
 
 ## 5. Remaining limitations and risks
 
+0. **First real-provider run (2026-11-12, `tools/ai-smoke.mjs`, 33 s English clip, phones on
+   af, af and st):**
+   - Deepgram transcribed all 7 chunks correctly, and the stitched sentences had no repeated
+     or missing words at any boundary.
+   - All Gemini calls failed with HTTP 429: the key is on the free tier, limited to 5 requests
+     per minute for `gemini-3.8-flash`. A few calls got 503 "high demand".
+   - Fixed after this run:
+     - Rate-limit retries now wait for the provider's own retry hint, up to 30 s.
+     - A sentence that waits too long is now split at its last full stop instead of
+       mid-sentence.
+   - Needed: a Gemini key on a billing-enabled project.
+
 1. **The Gemini Interactions response shape has not been verified against the real API** (it was
    coded from the docs). Run the live test first. `GEMINI_API=generate_content` is the fallback.
 2. Translation quality into st, nso and ss needs native-speaker review.

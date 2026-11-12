@@ -203,15 +203,23 @@ export function segment(state: SttState, committed: PlacedWord[], opts: SegmentO
 
   let rest = all.slice(startIdx);
   const endInRest = lastEnd >= startIdx ? lastEnd - startIdx : -1;
-  const carryTooOld = rest.length > 0 && rest[0].seq <= opts.currentSeq - MAX_CARRY_CHUNKS;
-  const flushAll = opts.force || opts.trailingPauseSec >= PAUSE_FLUSH_SEC || carryTooOld || rest.length > MAX_CARRY_WORDS;
+  const tooOld = (w: PlacedWord[]) => w.length > 0 && w[0].seq <= opts.currentSeq - MAX_CARRY_CHUNKS;
 
-  if (flushAll) {
+  if (opts.force || opts.trailingPauseSec >= PAUSE_FLUSH_SEC) {
+    // The lecturer stopped (pause, skipped chunk, session end): everything pending goes out.
     if (rest.length) utterances.push(toUtterance(rest, opts.fallbackLanguage));
     rest = [];
-  } else if (endInRest >= 0) {
-    utterances.push(toUtterance(rest.slice(0, endInRest + 1), opts.fallbackLanguage));
-    rest = rest.slice(endInRest + 1);
+  } else {
+    // Complete sentences go out; an unfinished one waits, unless it has waited too long or grown
+    // too long, in which case it is sent without its end (better than holding speech back).
+    if (endInRest >= 0) {
+      utterances.push(toUtterance(rest.slice(0, endInRest + 1), opts.fallbackLanguage));
+      rest = rest.slice(endInRest + 1);
+    }
+    if (tooOld(rest) || rest.length > MAX_CARRY_WORDS) {
+      utterances.push(toUtterance(rest, opts.fallbackLanguage));
+      rest = [];
+    }
   }
   return { utterances, state: { ...state, carry: rest } };
 }

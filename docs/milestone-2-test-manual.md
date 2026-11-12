@@ -18,13 +18,25 @@ Milestone 2 is complete only when every test in section 3 passes on real hardwar
    | SD | GPIO4 |
 
    Use short wires and no breadboard if possible.
-2. **Provider keys** (only you handle them; never commit them or put them in the firmware):
+2. **Provider keys** (only you handle them; never commit them or put them in the firmware).
+   The Gemini key must belong to a Google Cloud project **with billing enabled** (paid tier).
+   The free tier allows 5 requests/min for `gemini-3.8-flash`, which a live lecture exceeds
+   within seconds (measured 2026-11-12), and Google may use free-tier content to improve its
+   products.
    ```bash
    supabase secrets set DEEPGRAM_API_KEY=... GEMINI_API_KEY=...
    ```
    The workers switch from loopback to AI by themselves (`PIPELINE_MODE` defaults to `auto`).
    Check this by calling the function with the secret key: it reports `"mode":"ai"`.
-3. **Live provider check** (costs under $0.01): run the command in
+3. **Cloud-only end-to-end check** (no Hub needed, about $0.01): stream a speech recording
+   through the deployed pipeline as a simulated Hub with phones on af, af and st:
+   ```bash
+   node tools/ai-smoke.mjs --creds tools/.hub-credentials-simulated-hub-dev.json --wav speech-16k-mono.wav
+   ```
+   Expected: af and st segments come back, and the WAVs written to `ai-smoke-out/` play the
+   translation. It prints the delay of each segment after its chunk was uploaded.
+
+   **Live provider check** (costs under $0.01): run the command in
    [milestone-2-report.md §4](milestone-2-report.md#4-tests-executed-2026-11-12). Expected:
    - an Afrikaans translation;
    - TTS audio at 16000 Hz from both TTS models;
@@ -64,7 +76,7 @@ supabase db query --remote --read-only "select operation, model, language_code, 
 | P9 | Ordering | 5 min with two languages | Sentences play in the order spoken: no overlap, no repeats, no gaps beyond natural pauses | |
 | P10 | Accuracy | Lecturer reads a prepared technical paragraph | Afrikaans translation is complete (no summarising) and keeps the technical terms. A native speaker rates it | |
 | P11 | Latency | Lecturer says a short distinct sentence ("Number seven."), stopwatch from end of speech to start of the translated audio on the phone. 10 repetitions | Record min / median / max. Also record `avg_utterance_to_audio_ms` from `session_summary` | |
-| P12 | Session end | Press the button mid-sentence | The last sentence is still delivered or flushed. Red for 5 s. Phones show "lecture ended" | |
+| P12 | Session end | Press the button mid-sentence | Red for 5 s. Phones show "lecture ended". Speech from the last ~10 s before the press is not delivered: the Hub stops fetching at the press (known limitation) | |
 | P13 | Next session | Press again | New session; phones play only the new lecture | |
 | P14 | Sustained lecture | 45–60 min, two languages | No resets (`hubs.last_stats.reset` unchanged), `dropped` 0, `deadChunks` 0, free heap stable. Translation continues to the end | |
 | P15 | Costs | After P14 | Record `session_summary.cost_usd` and `session_usage`. Compare with the estimate in the report (~$2.50/h for af + st) | |

@@ -87,3 +87,11 @@ Deno.test("TTS: request shape and missing audio", async () => {
   assertEquals(body.store, false);
   assertEquals((body.generation_config as { speech_config: unknown }).speech_config, [{ voice: "Kore" }]);
 });
+
+Deno.test("rate-limit errors carry the provider's retry hint", async () => {
+  const body = JSON.stringify({ error: { message: "Rate limit exceeded for model gemini-3.8-flash (limit: 5 requests per minute on Free Tier). Please retry in 32s or upgrade your tier" } });
+  const e = await assertRejects(() => deepgramTranscribe({ apiKey: "k", wav, fetch: () => Promise.resolve(new Response(body, { status: 429 })) }), ProviderError);
+  assertEquals([e.retryable, e.retryAfterSec], [true, 32]);
+  const h = await assertRejects(() => deepgramTranscribe({ apiKey: "k", wav, fetch: () => Promise.resolve(new Response("busy", { status: 503, headers: { "Retry-After": "7" } })) }), ProviderError);
+  assertEquals(h.retryAfterSec, 7);
+});

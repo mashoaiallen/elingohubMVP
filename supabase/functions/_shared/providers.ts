@@ -26,9 +26,18 @@ export class ProviderError extends Error {
     readonly retryable: boolean,
     readonly status = 0,
     readonly requestId: string | null = null,
+    readonly retryAfterSec: number | null = null, // provider's own hint (Retry-After, "retry in Ns")
   ) {
     super(`${provider}: ${message}`);
   }
+}
+
+/** Retry hint from a Retry-After header or a "retry in 32s" / "retryDelay": "32s" body. */
+export function retryAfterSec(res: Response, body: string): number | null {
+  const h = res.headers.get("retry-after");
+  if (h && /^\d+$/.test(h.trim())) return Number(h.trim());
+  const m = /retry in (\d+(?:\.\d+)?)\s*s/i.exec(body) ?? /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(body);
+  return m ? Math.ceil(Number(m[1])) : null;
 }
 
 async function request(provider: string, f: FetchLike, url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -45,13 +54,13 @@ async function request(provider: string, f: FetchLike, url: string, init: Reques
 }
 
 async function failure(provider: string, res: Response, requestId: string | null): Promise<ProviderError> {
-  let detail = "";
+  let body = "";
   try {
-    detail = (await res.text()).slice(0, 300);
+    body = await res.text();
   } catch { /* ignore */ }
   // 408/429/5xx are transient; other 4xx (bad key, bad audio, bad request) will not improve on retry.
   const retryable = res.status === 408 || res.status === 429 || res.status >= 500;
-  return new ProviderError(provider, `HTTP ${res.status} ${detail}`.trim(), retryable, res.status, requestId);
+  return new ProviderError(provider, `HTTP ${res.status} ${body.slice(0, 300)}`.trim(), retryable, res.status, requestId, retryAfterSec(res, body));
 }
 
 // ------------------------------------------------------------------------------------ Deepgram
