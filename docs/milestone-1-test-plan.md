@@ -38,9 +38,9 @@ series resistor per colour (on the module or added).
 | 3 | Student network | Phones see **eLingo-Hub**, connect with the AP password | |
 | 4 | Page loads locally | Page opens via captive portal or http://192.168.4.1 with mobile data **off** | |
 | 5 | Two phones connect | Footer shows "2 of 10 devices connected" | |
-| 6 | Start session | Short press → blue solid immediately, red and green off; stays blue while nobody listens | |
+| 6 | Start session | Short press → blue flickering immediately (red and green off); keeps flickering while no student has joined | |
 | 7 | Same language | A and B choose Afrikaans → both hear the lecturer (loopback) ~10 s delayed; card shows 2 listening | |
-| 8 | First audio | LED turns green (blue and red off) at the same moment serial prints the first `[Cloud] Segment … stored`. It does not turn green earlier, e.g. at chunk upload | |
+| 8 | First student | A chooses a language → LED turns solid green (serial: `[Hub] First student joined: LED green`) and stays green for the rest of the session, even if A leaves | |
 | 9 | Different languages | B switches to Sesotho → af=1, st=1; both keep playing | |
 | 10 | One leaves, one stays | A taps Leave → B unaffected; af inactive | |
 | 11 | Final listener leaves | B leaves → no new segments generated (`source_chunks.status = skipped_no_listeners`) | |
@@ -49,11 +49,11 @@ series resistor per colour (on the module or added).
 | 14 | Hub reboot mid-session | Reset button → Hub resumes the same session; phones recover | |
 | 15 | Duplicate subscriptions | Refresh page 5× → still one listener (same id) | |
 | 16 | Expired listener | Close A's browser → removed after ~30 s on the Hub, ~45 s in the cloud | |
-| 17 | End session | Second press → red only, immediately; stopwatch 5 s (±0.2 s) → all off. Serial shows `Session … end: ok`. Phones show "The lecturer has ended the session", then "The lecture has ended" | |
-| 18 | Button bounce | Double-tap at start → stays blue (second tap ignored, 2 s lockout); press during the 5 s red → ignored, red still ends on time | |
-| 18a | Next session | After the red, press again → blue; phone left on the page plays the new lecture without reloading | |
-| 18b | Quick restart | Press start within 2–3 s of the red ending → blue at once; serial shows the previous end finishing before the new `Session … started` | |
-| 18c | Blue with no listeners | Start with no phone on a language → LED stays blue; choose a language on a phone → green within ~15 s | |
+| 17 | End session | Second press → red only, immediately; stopwatch 10 s (±0.2 s) → all off. Serial shows `Session … end: ok`. Phones show "The lecturer has ended the session", then "The lecture has ended" | |
+| 18 | Button bounce | Double-tap at start → keeps flickering blue (second tap ignored, 2 s lockout); press during the 10 s red → ignored, red still ends on time | |
+| 18a | Next session | After the red, press again → blue flicker; phone left on the page plays the new lecture without reloading | |
+| 18b | Quick restart | Press start within 2–3 s of the red ending → blue flicker at once; serial shows the previous end finishing before the new `Session … started` | |
+| 18c | Blue with no students | Start with no phone on a language → LED keeps flickering blue; choose a language on a phone → solid green within ~1 s | |
 | 19 | Setup page | Hold 5 s → blue double blink; change upstream Wi-Fi from a phone without reflashing | |
 | 20 | Long session | 60 min session: `status` every 10 min — free heap stable, `dropped` 0, no resets | |
 | 21 | Audio quality | First chunk of a session has no start-up burst; no clicks on loud speech | |

@@ -21,7 +21,8 @@ StateMachine::StateMachine(SettingsStore &settings, WifiManager &wifi, LedManage
       apRestartAtMs_(0),
       startRequestedMs_(0),
       startRequested_(false),
-      hardwareFault_(false) {}
+      hardwareFault_(false),
+      listenerJoined_(false) {}
 
 void StateMachine::begin(bool hardwareFault) {
   hardwareFault_ = hardwareFault;
@@ -63,6 +64,7 @@ void StateMachine::beginCapture(uint32_t firstSeq) {
     transitionTo(HubState::FATAL);
     return;
   }
+  listenerJoined_ = false;
   transitionTo(HubState::IN_SESSION);
 }
 
@@ -91,7 +93,7 @@ void StateMachine::handleButton(ButtonEvent event) {
       break;
     case HubState::IN_SESSION:
       Serial.println("[Hub] Button: end session");
-      transitionTo(HubState::SESSION_ENDED);  // red on now, held for 5 s
+      transitionTo(HubState::SESSION_ENDED);  // red on now, held for 10 s
       endSession("button");
       break;
     case HubState::STARTING:
@@ -205,13 +207,16 @@ void StateMachine::update() {
       break;
   }
 
+  if (state_ == HubState::IN_SESSION && !listenerJoined_ && listeners_.count() > 0) {
+    listenerJoined_ = true;  // LED: blue flicker -> green
+    Serial.println("[Hub] First student joined: LED green");
+  }
   refreshLed();
   led_.update(now);
 }
 
 void StateMachine::refreshLed() {
   LedPattern pattern = LedPattern::OFF;
-  HubSnapshot snap = session_.snapshot();
   switch (state_) {
     case HubState::BOOTING:
       pattern = LedPattern::BOOT_SWEEP;
@@ -220,15 +225,16 @@ void StateMachine::refreshLed() {
       pattern = LedPattern::FATAL;
       break;
     case HubState::SESSION_ENDED:
-      pattern = LedPattern::SESSION_ENDED;  // red for 5 s, then off
+      pattern = LedPattern::SESSION_ENDED;  // red for 10 s, then off
       break;
     case HubState::STARTING:
-      pattern = LedPattern::SESSION_WAITING;  // blue as soon as the button is pressed
+      pattern = LedPattern::SESSION_WAITING;  // blue flicker as soon as the button is pressed
       break;
     case HubState::IN_SESSION:
-      // Solid blue until the first translated audio is stored on the Hub, then solid green for the
-      // rest of the session. A weak cloud link never changes the colour (see the student page).
-      pattern = snap.translating ? LedPattern::SESSION_TRANSLATING : LedPattern::SESSION_WAITING;
+      // Blue flicker until the first student joins (chooses a language on the Hub page), then solid
+      // green for the rest of the session, even if students leave. A weak cloud link never
+      // changes the colour (see the student page).
+      pattern = listenerJoined_ ? LedPattern::SESSION_LIVE : LedPattern::SESSION_WAITING;
       break;
     case HubState::OFFLINE:
       pattern = server_.setupActive() ? LedPattern::SETUP : LedPattern::OFFLINE;

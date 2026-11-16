@@ -10,20 +10,20 @@
 //  BOOT_SWEEP            red, green, blue once (0.9 s)         Power-on self-test
 //  OFFLINE               short red blink every 2 s             No upstream Wi-Fi or cloud
 //  SETUP                 blue double-blink every 1.5 s         Setup page open (long press)
-//  SESSION_WAITING       blue solid (red, green off)           Session started, no translated audio yet
-//  SESSION_TRANSLATING   green solid (red, blue off)           First translated audio received by the Hub
-//  SESSION_ENDED         red solid (green, blue off)           Session ended; held for 5 s, then OFF
+//  SESSION_WAITING       blue flickering (~3 Hz)               Session starting / on, no student joined yet
+//  SESSION_LIVE          green solid (red, blue off)           A student has joined the session
+//  SESSION_ENDED         red solid (green, blue off)           Session ended; held for 10 s, then OFF
 //  FATAL                 red fast blink (5 Hz)                 Hardware fault (microphone/PSRAM)
 //
-// The three session patterns are always solid: a weak cloud link during a session is reported on
-// the student page and the serial log, never by blinking the session colour.
+// A weak cloud link during a session is reported on the student page and the serial log, never
+// on the LED.
 enum class LedPattern : uint8_t {
   OFF,
   BOOT_SWEEP,
   OFFLINE,
   SETUP,
   SESSION_WAITING,
-  SESSION_TRANSLATING,
+  SESSION_LIVE,
   SESSION_ENDED,
   FATAL
 };

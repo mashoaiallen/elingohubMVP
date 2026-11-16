@@ -65,7 +65,7 @@ supabase db query --remote --read-only "select operation, model, language_code, 
 
 | # | Test | Steps | Expected | Result |
 | --- | --- | --- | --- | --- |
-| P1 | Same language | A and B choose Afrikaans, then Start listening | Both hear Afrikaans speech of what the lecturer said. `translation_jobs` has **one** af job per utterance (not two). LED blue, then green | |
+| P1 | Same language | A and B choose Afrikaans, then Start listening | Both hear Afrikaans speech of what the lecturer said. `translation_jobs` has **one** af job per utterance (not two). LED: blue flickering after the press, solid green once A joins | |
 | P2 | Different languages | B switches to Sesotho | A hears Afrikaans and B hears Sesotho, both continuously. Jobs exist for af and st only | |
 | P3 | Lecturer's language | B chooses English while the lecturer speaks English | B hears the lecturer's own voice. Usage shows no Gemini call for en | |
 | P4 | One student leaves | A taps Leave | B unaffected. No new af jobs after about 15 s (`skipped_no_listeners` at most for jobs already queued) | |
@@ -76,7 +76,7 @@ supabase db query --remote --read-only "select operation, model, language_code, 
 | P9 | Ordering | 5 min with two languages | Sentences play in the order spoken: no overlap, no repeats, no gaps beyond natural pauses | |
 | P10 | Accuracy | Lecturer reads a prepared technical paragraph | Afrikaans translation is complete (no summarising) and keeps the technical terms. A native speaker rates it | |
 | P11 | Latency | Lecturer says a short distinct sentence ("Number seven."), stopwatch from end of speech to start of the translated audio on the phone. 10 repetitions | Record min / median / max. Also record `avg_utterance_to_audio_ms` from `session_summary` | |
-| P12 | Session end | Press the button mid-sentence | Red for 5 s. Phones show "lecture ended". Speech from the last ~10 s before the press is not delivered: the Hub stops fetching at the press (known limitation) | |
+| P12 | Session end | Press the button mid-sentence | Red for 10 s. Phones show "lecture ended". Speech from the last ~10 s before the press is not delivered: the Hub stops fetching at the press (known limitation) | |
 | P13 | Next session | Press again | New session; phones play only the new lecture | |
 | P14 | Sustained lecture | 45–60 min, two languages | No resets (`hubs.last_stats.reset` unchanged), `dropped` 0, `deadChunks` 0, free heap stable. Translation continues to the end | |
 | P15 | Costs | After P14 | Record `session_summary.cost_usd` and `session_usage`. Compare with the estimate in the report (~$2.50/h for af + st) | |

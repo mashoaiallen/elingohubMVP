@@ -58,9 +58,9 @@ void LedManager::update(uint32_t now) {
       break;
     }
     case LedPattern::SESSION_WAITING:
-      write(false, false, true);
+      write(false, false, (t % 300) < 150);  // blue flicker: 150 ms on, 150 ms off
       break;
-    case LedPattern::SESSION_TRANSLATING:
+    case LedPattern::SESSION_LIVE:
       write(false, true, false);
       break;
     case LedPattern::SESSION_ENDED:
@@ -89,8 +89,8 @@ const char *LedManager::name(LedPattern pattern) {
     case LedPattern::BOOT_SWEEP: return "BOOT_SWEEP";
     case LedPattern::OFFLINE: return "OFFLINE";
     case LedPattern::SETUP: return "SETUP";
-    case LedPattern::SESSION_WAITING: return "SESSION_WAITING(blue)";
-    case LedPattern::SESSION_TRANSLATING: return "SESSION_TRANSLATING(green)";
+    case LedPattern::SESSION_WAITING: return "SESSION_WAITING(blue flicker)";
+    case LedPattern::SESSION_LIVE: return "SESSION_LIVE(green)";
     case LedPattern::SESSION_ENDED: return "SESSION_ENDED(red)";
     case LedPattern::FATAL: return "FATAL";
   }

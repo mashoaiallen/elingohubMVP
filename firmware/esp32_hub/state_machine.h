@@ -63,6 +63,7 @@ class StateMachine {
   uint32_t startRequestedMs_;
   bool startRequested_;
   bool hardwareFault_;
+  bool listenerJoined_;  // a student has joined during this session (LED green)
 };
 
 #endif

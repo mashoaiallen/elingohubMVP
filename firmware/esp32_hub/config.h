@@ -7,7 +7,7 @@
 // from the gitignored secrets.h on first boot.
 namespace Config {
 
-constexpr const char *FIRMWARE_VERSION = "0.3.3-m2";
+constexpr const char *FIRMWARE_VERSION = "0.3.4-m2";
 
 // ---- Student network (soft-AP) ------------------------------------------------------------
 constexpr const char *AP_SSID = "eLingo-Hub";
@@ -24,7 +24,7 @@ constexpr uint32_t STA_RETRY_MAX_MS = 60000;
 constexpr uint32_t BUTTON_DEBOUNCE_MS = 40;
 constexpr uint32_t BUTTON_LONG_PRESS_MS = 5000;
 constexpr uint32_t BUTTON_LOCKOUT_MS = 2000;
-constexpr uint32_t SESSION_END_RED_MS = 5000;
+constexpr uint32_t SESSION_END_RED_MS = 10000;
 constexpr uint32_t SESSION_START_TIMEOUT_MS = 20000;
 constexpr uint32_t SETUP_MODE_MS = 10UL * 60UL * 1000UL;
 

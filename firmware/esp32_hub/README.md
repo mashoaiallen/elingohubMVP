@@ -59,18 +59,16 @@ Diagnostics in `status` and in `hubs.last_stats`: `reset` (why the Hub last rest
 
 ## LED and button
 
-A session shows exactly three states, each solid and one colour at a time:
+A session shows three states, one colour at a time (firmware ≥ 0.3.4):
 
 | Session state | LED | Starts when | Ends when |
 | --- | --- | --- | --- |
-| **Session started** | **blue** only | first press (Hub ready) | first translated audio stored on the Hub |
-| **Translation received** | **green** only | the Hub has downloaded and stored the first playable translated segment, not when processing starts | session ends |
-| **Session ended** | **red** only, 5 s | second press (or the cloud ends the session) | 5 s later: all off, Hub idle and ready for the next press |
+| **Session starting / waiting** | **blue flickering** (~3 Hz) | first press | the first student joins (chooses a language on the Hub page) |
+| **Session live** | **green** solid | the first student joins | session ends (stays green even if students leave) |
+| **Session ended** | **red** solid, 10 s | second press (or the cloud ends the session) | 10 s later: all off, Hub idle and ready for the next press |
 
-Green needs a phone to be listening. The Hub only fetches languages that a connected phone has
-chosen, and the cloud makes no audio for languages nobody listens to. With no phone listening,
-the LED stays blue for the whole session. In Milestone 1 the "translated" audio is the
-loopback copy of the lecturer's audio.
+Phones already listening when the session starts turn it green as soon as the cloud confirms
+the session.
 
 Outside a session the LED is off, apart from these diagnostics, none of which looks like the
 three session states:
@@ -90,8 +88,8 @@ Button:
 
 - **Short press**: start a session when idle; end it when running. Presses within 2 s of the
   last one are ignored, so a double-tap cannot start and stop. Presses while the Hub is still
-  starting (blue, before the cloud confirms) or during the 5 s red are ignored too.
-- If you press start within a few seconds of an end, the Hub turns blue immediately. It waits
+  starting (blue, before the cloud confirms) or during the 10 s red are ignored too.
+- If you press start within a few seconds of an end, the Hub flickers blue immediately. It waits
   until the last audio of the previous session has uploaded (at most 10 s) before starting the
   new one.
 - **On end**: capture stops, the remaining audio is uploaded (at most 10 s), the session is
